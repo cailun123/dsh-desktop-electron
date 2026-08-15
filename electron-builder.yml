@@ -1,7 +1,7 @@
 # dsh-desktop-electron packaging. The app payload is lib/ (the Electron main
-# and the process-tree primitive, both emitted by tsc) and build/ (icons).
-# This shell carries no harness source and bundles no Node runtime, so there
-# is no dependency closure to pack — the backend is the host's own `dsh web`.
+# and local primitives), build/ (icons), and the production dependency closure
+# rooted at cross-spawn. The shell carries no harness source or Node runtime;
+# the backend remains the host's own `dsh web`.
 appId: ai.deepseek.dsh-desktop-electron
 productName: DSH Desktop
 directories:

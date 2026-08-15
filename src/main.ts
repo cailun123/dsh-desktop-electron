@@ -6,11 +6,11 @@
  * child and exits.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 import { killProcessTree } from './process-tree.ts'
 import { app, BrowserWindow, dialog, Menu, nativeImage, shell, Tray } from './electron-api.ts'
-import { resolveWebLaunch, waitForHttpOk, waitForReadyLine, childExited } from './launcher.ts'
+import { resolveWebLaunch, spawnWebLaunch, waitForHttpOk, waitForReadyLine, childExited } from './launcher.ts'
 
 const APP_ID = 'ai.deepseek.dsh-desktop'
 const WINDOW_TITLE = 'DSH Desktop'
@@ -28,6 +28,7 @@ const PACKAGE_DIR = app.getAppPath()
 let mainWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let server: ChildProcess | undefined
+let reaper: ChildProcess | undefined
 let serverUrl: URL | undefined
 let quitting = false
 // Set by the first fatal() so one root cause cannot show duplicate modal
@@ -194,20 +195,69 @@ async function exposeLifecycleTestControl(): Promise<void> {
   process.stdout.write(`DSH_DESKTOP_READY ${String(serverPid)}\n`)
 }
 
+/**
+ * Resume Electron's normal quit after the server tree reaches quiescence.
+ * The first `before-quit` event is cancelled while teardown runs; clearing the
+ * server makes the second event pass through without starting or blocking a
+ * second cleanup.
+ * @param code - process exit code.
+ */
+function resumeApplicationQuit(code: number): void {
+  server = undefined
+  process.exitCode = code
+  app.quit()
+}
+
+/**
+ * Stop the orphan reaper after graceful server teardown has completed. A hard
+ * kill never reaches this boundary, so the detached reaper remains available
+ * for the failure mode it owns; a graceful quit no longer leaves an otherwise
+ * idle descendant blocking Electron's native shutdown.
+ */
+function stopReaper(): Promise<void> {
+  const child = reaper
+  reaper = undefined
+  if (child === undefined || child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    child.once('close', finish)
+    child.once('error', finish)
+    try {
+      if (!child.kill()) finish()
+    } catch {
+      // A concurrent natural exit means the reaper is already quiescent.
+      finish()
+    }
+  })
+}
+
+/**
+ * Complete graceful or fatal process cleanup before resuming Electron quit.
+ * @param code - final process exit code.
+ * @param serverPid - optional server process-tree root to terminate first.
+ */
+async function finishApplicationQuit(code: number, serverPid?: number): Promise<void> {
+  if (serverPid !== undefined) await killTree(serverPid)
+  await stopReaper()
+  resumeApplicationQuit(code)
+}
+
 function fatal(error: Error): void {
   console.error(`[dsh-desktop] ${error.message}`)
   if (failing) return
   failing = true
   dialog.showErrorBox(WINDOW_TITLE, error.message)
-  // app.exit() skips before-quit; kill the server tree and wait for the
-  // dispatch to land so a boot failure cannot leave an orphaned `dsh web`
-  // (the reaper only guards hard kills).
+  // Kill the server tree and wait for the dispatch to land so a boot failure
+  // cannot leave an orphaned `dsh web` (the reaper only guards hard kills).
   quitting = true
-  if (server?.pid !== undefined) {
-    void killTree(server.pid).then(() => { app.exit(1) })
-  } else {
-    app.exit(1)
-  }
+  void finishApplicationQuit(1, server?.pid)
 }
 
 /**
@@ -219,22 +269,34 @@ function runDir(): string {
   return app.isPackaged ? join(process.resourcesPath, 'app.asar.unpacked') : PACKAGE_DIR
 }
 
+/**
+ * Start the detached orphan reaper. Its process handle is unreferenced so it can
+ * outlive a hard-killed main, while the retained child reference lets the
+ * graceful teardown path stop it after the server tree is already gone.
+ * @param serverPid - server process-tree root watched by the reaper.
+ */
+function startReaper(serverPid: number): void {
+  reaper = nodeSpawn(process.execPath, [join(runDir(), 'lib', 'reaper.js'), String(process.pid), String(serverPid)], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: 'ignore',
+    windowsHide: true,
+    detached: true,
+  })
+  reaper
+    // The reaper is best-effort: if it cannot start, the graceful quit path
+    // still tree-kills the server; only hard-kill cleanup is lost.
+    .on('error', () => {})
+    // Unref after the error handler, which returns the child itself.
+    .unref()
+}
+
 async function boot(): Promise<void> {
   const launch = resolveWebLaunch({ env: process.env })
   if (launch.env.DSH_PERMISSION_MODE !== undefined && (process.env.DSH_PERMISSION_MODE === undefined || process.env.DSH_PERMISSION_MODE === '')) {
     console.warn(`[dsh-desktop] Windows has no harness confinement backend; using ${launch.env.DSH_PERMISSION_MODE} permission mode (approval prompts are disabled). Set DSH_PERMISSION_MODE to override.`)
   }
   console.log(`[dsh-desktop] launching dsh web (${launch.source}): ${launch.command} ${launch.args.join(' ')}`)
-  const child = spawn(launch.command, launch.args, {
-    cwd: launch.cwd,
-    env: { ...process.env, ...launch.env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-    // POSIX: detaching makes the child a process-group leader so both killTree
-    // and the reaper can signal the whole tree with a negated PID; Windows
-    // stays attached and tree-kills with taskkill /T instead.
-    detached: process.platform !== 'win32',
-  })
+  const child = spawnWebLaunch(launch, { env: process.env })
   server = child
   let ready = false
   let stderrTail = ''
@@ -262,28 +324,13 @@ async function boot(): Promise<void> {
   // Manager, taskkill, a crash), so `dsh web` cannot outlive its window on any
   // platform. Windows kills via taskkill /T; POSIX signals the server's
   // process group (the server is detached, so a negated PID reaches the whole
-  // tree). The reaper stays alive across a graceful quit too: it detects the
-  // main's exit and finishes the cleanup even if the quit path's own killTree
-  // races the exit. It is deliberately not killed on quit. Like the server, it
+  // tree). During graceful quit it stays alive until the main's own tree-kill
+  // reaches completion, so an interruption still has a cleanup owner; it is
+  // then stopped before Electron resumes native shutdown. Like the server, it
   // must live outside Electron's process group: a terminal Ctrl+C signals the
   // group, and taking the reaper with it would kill the hard-kill cleanup
   // exactly when it is needed (detached + unref below).
-  spawn(process.execPath, [join(runDir(), 'lib', 'reaper.js'), String(process.pid), String(child.pid ?? 0)], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: 'ignore',
-    windowsHide: true,
-    // Detached gives the reaper its own process group on POSIX (immune to the
-    // group SIGINT that takes Electron) and a console-less independent process
-    // on Windows; there taskkill /T is group-agnostic, so it still reaches the
-    // reaper's targets. unref() drops the parent's handle so Electron can exit
-    // without waiting — the reaper's job is to outlive it, not hold it open.
-    detached: true,
-  })
-    // The reaper is best-effort: if it cannot start, the graceful quit path
-    // still tree-kills the server; only hard-kill cleanup is lost.
-    .on('error', () => {})
-    // Unref after the error handler, which returns the child itself.
-    .unref()
+  if (child.pid !== undefined) startReaper(child.pid)
   // Readable stream: yield strings, and a multibyte character split across
   // chunks is reassembled by the decoder instead of mojibaked.
   child.stdout.setEncoding('utf8')
@@ -351,7 +398,7 @@ if (!app.requestSingleInstanceLock()) {
       // The reaper is the hard-kill backup: if this path is interrupted
       // (crash, forced exit), the reaper performs the same tree kill.
       event.preventDefault()
-      void killTree(server.pid).then(() => { app.exit(0) })
+      void finishApplicationQuit(0, server.pid)
     }
   })
   // Tray residency: the app outlives its window by design, so a destroyed

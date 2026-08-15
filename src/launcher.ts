@@ -5,9 +5,11 @@
  * `main.ts`.
  */
 
-import type { ChildProcess } from 'node:child_process'
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Readable } from 'node:stream'
+import crossSpawn from 'cross-spawn'
 
 /** Server flags every surface launch passes to `dsh web`. Port 0 requests an OS-assigned port (headless already uses this). */
 export const WEB_ARGS = ['web', '--host', '127.0.0.1', '--port', '0'] as const
@@ -22,6 +24,25 @@ export interface WebServerLaunch {
   env: Record<string, string>
   cwd?: string
   source: string
+}
+
+/** Process spawn signature shared by the production launcher and its test seam. */
+export type SpawnFn = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+
+/** Host-owned environment and working-directory defaults for one Web server spawn. */
+export interface SpawnWebLaunchOptions {
+  /** Environment inherited by the server before launch-specific overrides. */
+  env: NodeJS.ProcessEnv
+  /** Working directory used when the resolved launch does not own one. */
+  cwd?: string
+  /** Platform selector for process-group behavior; defaults to the running platform. */
+  platform?: NodeJS.Platform
+}
+
+/** A launched Web server whose fixed stdio contract exposes both output pipes. */
+export interface WebLaunchChild extends ChildProcess {
+  stdout: Readable
+  stderr: Readable
 }
 
 /** Filesystem and process facts the launcher reads; injectable for tests. */
@@ -89,6 +110,33 @@ export function resolveWebLaunch(options: LaunchEnvironment): WebServerLaunch {
     }
   }
   return { command: 'dsh', args: [...WEB_ARGS], env: permissionMode, source: 'PATH' }
+}
+
+/**
+ * Spawn a resolved Web launch through the Windows-shim-compatible process
+ * boundary. The helper owns the stdio, environment, working-directory, and
+ * process-group contract; callers own readiness, failure reporting, and
+ * teardown.
+ * @param launch - resolved executable, arguments, and launch-specific facts.
+ * @param options - host environment and working-directory defaults.
+ * @param spawn - injectable process primitive; production uses `cross-spawn`.
+ * @returns the live child with piped stdout and stderr.
+ */
+export function spawnWebLaunch(
+  launch: WebServerLaunch,
+  options: SpawnWebLaunchOptions,
+  spawn: SpawnFn = crossSpawn,
+): WebLaunchChild {
+  // The return type narrows the generic cross-spawn declaration to the fixed
+  // stdio tuple owned here; callers never configure these streams separately.
+  return spawn(launch.command, launch.args, {
+    cwd: launch.cwd ?? options.cwd,
+    env: { ...options.env, ...launch.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    // POSIX children lead a process group; Windows cleanup uses taskkill /T.
+    detached: (options.platform ?? process.platform) !== 'win32',
+  }) as WebLaunchChild
 }
 
 /**
