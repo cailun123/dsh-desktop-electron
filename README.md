@@ -30,6 +30,8 @@ A working `dsh web`, resolved in this order:
 2. **`DSH_HOME`** — a harness checkout root (`~/.dsh/source/current` for an `install.sh` install). Its built `apps/cli/lib/bin.js` is preferred; otherwise the tsx source launch is used, exactly as the checkout's own `pnpm run dsh` does;
 3. **`dsh` on `PATH`**.
 
+On Windows, the spawn boundary automatically resolves npm command shims reached through either `DSH_BIN` or `PATH`, including `.cmd` files. Arguments remain a separate vector: the shell does not enable a general command shell and does not require users to locate the package's JavaScript entry point.
+
 The server always listens on `127.0.0.1` with an OS-assigned port (`--port 0`), so it can never collide with an existing `dsh web` — a browser instance and this shell can run side by side.
 
 ## Run from source
@@ -59,8 +61,10 @@ Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn o
 ## Tests
 
 ```sh
-npm test        # 28 keyless cases: command resolution, readiness parsing, HTTP polling
+npm test        # 31 keyless cases: command resolution/spawn, readiness parsing, HTTP polling
+npm run test:electron:windows # built Electron lifecycle through a Windows npm .cmd shim
 npm run typecheck
+npm run dist:dir # unpacked app plus packaged production-closure verification
 ```
 
 ## Credits
