@@ -2,11 +2,11 @@
 
 [English](README.md) | 中文
 
-[DeepSeek Harness](https://github.com/deepseek-harness)（`dsh`）Web GUI 的 Electron 桌面外壳：启动 `dsh web`，等待服务端的就绪行，把 GUI 托管在独立窗口里，并常驻托盘。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）Web GUI 的 Electron 桌面外壳：启动 `dsh web`，等待服务端的就绪行，把 GUI 托管在独立窗口里，并常驻托盘。
 
-兼容性已针对当前可用的最后一个内测 CLI `@deepseek-ai/dsh` `0.0.1-rc.1`（`snapshot-20260811T152241Z-da262ec14c`）完成核验。外壳仅依赖维护中的 `dsh web --host <host> --port <port>` 参数和 `dsh web: <URL>` 就绪行。
+本外壳面向公开发布的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 包。它仅依赖维护中的 `dsh web --host <host> --port <port>` 参数和 `dsh web: <URL>` 就绪行。
 
-> 本仓库是 `dsh-external` 组织下的 DSH 内测社区仓库，**不携带任何 harness 源码** —— 后端用的是你自己安装的 `dsh`。官方不保证公开发布后该组织仍然存在，请自行保留副本。
+> 本仓库是独立维护的 DSH 桌面外壳项目，**不携带任何 harness 源码** —— 后端用的是你自己安装的 `dsh`。
 
 ## 这是什么
 
@@ -69,8 +69,8 @@ npm run dist:dir # 解包应用及打包生产依赖闭包验证
 
 ## 来源
 
-外壳、launcher 与 process-tree 原语是在一个 harness fork 中开发并已贡献回上游；本仓库是其独立抽取版本。组织内相关的独立外壳实现：[dsh-desktop](https://github.com/dsh-external/dsh-desktop)（Go/Wails，Windows）、[dsh-desktop-mac](https://github.com/dsh-external/dsh-desktop-mac)（Swift/WKWebView）、[deepseek-harness-desktop](https://github.com/dsh-external/deepseek-harness-desktop)（Wails + Node SEA）。
+外壳、launcher 与 process-tree 原语是在一个 harness fork 中开发并已贡献回上游；本仓库是其独立抽取版本。相关的独立桌面外壳实现：[dsh-desktop](https://github.com/dsh-external/dsh-desktop)（Go/Wails，Windows）、[dsh-desktop-mac](https://github.com/dsh-external/dsh-desktop-mac)（Swift/WKWebView）、[deepseek-harness-desktop](https://github.com/omdsh-dev/deepseek-harness-desktop)（Wails + Node SEA）。
 
 ## 许可
 
-[BSD 3-Clause](LICENSE)，与 harness 一致。
+[MIT](LICENSE)，与 harness 一致。

@@ -2,11 +2,11 @@
 
 English | [中文](README.zh.md)
 
-An Electron desktop shell for the [DeepSeek Harness](https://github.com/deepseek-harness) (`dsh`) Web GUI: it spawns `dsh web`, waits for the server's readiness line, and hosts the GUI in a standalone window with tray residency.
+An Electron desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) Web GUI: it spawns `dsh web`, waits for the server's readiness line, and hosts the GUI in a standalone window with tray residency.
 
-Compatibility was verified against the last currently available internal-test CLI, `@deepseek-ai/dsh` `0.0.1-rc.1` (`snapshot-20260811T152241Z-da262ec14c`). The shell relies only on the maintained `dsh web --host <host> --port <port>` arguments and the `dsh web: <URL>` readiness line.
+The shell targets the public [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) package. It relies only on the maintained `dsh web --host <host> --port <port>` arguments and the `dsh web: <URL>` readiness line.
 
-> This repository is a DSH internal-testing community repo under the `dsh-external` organization. It carries **no harness source code** — the backend is your own `dsh` installation. The organization is not guaranteed to outlive the internal-testing period; keep your own copy.
+> This repository is an independently maintained DSH desktop-shell project. It carries **no harness source code** — the backend is your own `dsh` installation.
 
 ## What this is
 
@@ -69,8 +69,8 @@ npm run dist:dir # unpacked app plus packaged production-closure verification
 
 ## Credits
 
-The shell, the launcher, and the process-tree primitive were developed in a harness fork and contributed upstream; this repository is the standalone extraction. Related standalone shells in the organization: [dsh-desktop](https://github.com/dsh-external/dsh-desktop) (Go/Wails, Windows), [dsh-desktop-mac](https://github.com/dsh-external/dsh-desktop-mac) (Swift/WKWebView), [deepseek-harness-desktop](https://github.com/dsh-external/deepseek-harness-desktop) (Wails + Node SEA).
+The shell, the launcher, and the process-tree primitive were developed in a harness fork and contributed upstream; this repository is the standalone extraction. Related standalone shells: [dsh-desktop](https://github.com/dsh-external/dsh-desktop) (Go/Wails, Windows), [dsh-desktop-mac](https://github.com/dsh-external/dsh-desktop-mac) (Swift/WKWebView), [deepseek-harness-desktop](https://github.com/omdsh-dev/deepseek-harness-desktop) (Wails + Node SEA).
 
 ## License
 
-[BSD 3-Clause](LICENSE), matching the harness.
+[MIT](LICENSE), matching the harness.
