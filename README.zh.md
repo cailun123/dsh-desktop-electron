@@ -6,7 +6,7 @@
 
 本外壳面向公开发布的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 包。它仅依赖维护中的 `dsh web --host <host> --port <port>` 参数和 `dsh web: <URL>` 就绪行。
 
-> 本仓库是独立维护的 DSH 桌面外壳项目，**不携带任何 harness 源码** —— 后端用的是你自己安装的 `dsh`。
+> 本仓库是独立维护的 DSH 桌面外壳项目，**不携带任何 harness 源码**；后端由主机上的 `dsh` 安装提供。
 
 ## 这是什么
 

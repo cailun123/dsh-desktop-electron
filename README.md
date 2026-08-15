@@ -6,7 +6,7 @@ An Electron desktop shell for the [DeepSeek Harness](https://github.com/deepseek
 
 The shell targets the public [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) package. It relies only on the maintained `dsh web --host <host> --port <port>` arguments and the `dsh web: <URL>` readiness line.
 
-> This repository is an independently maintained DSH desktop-shell project. It carries **no harness source code** — the backend is your own `dsh` installation.
+> This repository is an independently maintained DSH desktop-shell project. It carries **no harness source code**; the backend is provided by a `dsh` installation on the host.
 
 ## What this is
 
