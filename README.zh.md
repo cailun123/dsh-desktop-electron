@@ -30,6 +30,8 @@ Web GUI 是 harness 交互最丰富的界面，但平常只活在浏览器标签
 2. **`DSH_HOME`** —— harness checkout 根目录（用 `install.sh` 安装的话是 `~/.dsh/source/current`）。优先用其构建产物 `apps/cli/lib/bin.js`；没有则走 tsx 源码启动，与该 checkout 自己的 `pnpm run dsh` 完全一致；
 3. **`PATH` 上的 `dsh`**。
 
+在 Windows 上，spawn 边界会自动解析通过 `DSH_BIN` 或 `PATH` 找到的 npm 命令 shim，包括 `.cmd` 文件。参数始终保持独立向量：外壳不会启用通用命令 shell，也不要求用户自行定位 npm 包的 JavaScript 入口点。
+
 服务端始终监听 `127.0.0.1`，端口由操作系统分配（`--port 0`），因此永远不会和已有的 `dsh web` 冲突 —— 浏览器实例和这个外壳可以同时开着。
 
 ## 从源码运行
@@ -59,8 +61,10 @@ npm run dist:dir    # 只输出未打包目录，用于快速冒烟
 ## 测试
 
 ```sh
-npm test        # 28 个无密钥用例：命令解析、就绪行解析、HTTP 轮询
+npm test        # 31 个无密钥用例：命令解析与 spawn、就绪行解析、HTTP 轮询
+npm run test:electron:windows # 通过 Windows npm .cmd shim 验证构建后的 Electron 生命周期
 npm run typecheck
+npm run dist:dir # 解包应用及打包生产依赖闭包验证
 ```
 
 ## 来源
