@@ -12,6 +12,17 @@ files:
   - build/**
   - package.json
 asar: true
+# The only native module in this workspace is @resvg/resvg-js, which lives in
+# devDependencies and is only used by `scripts/generate-icons.mjs` to rasterize
+# SVG assets at developer time. It is never bundled into the packaged app
+# (the `files:` list above is a closed set and contains no node_modules from
+# devDependencies). Running electron-builder's npm-rebuild helper therefore
+# just spawns node-gyp against a module that is not part of the production
+# payload. On hosts where child-process spawning is restricted (e.g. locked-
+# down Windows sessions, certain CI sandboxes), the @electron/rebuild helper
+# fork fails with EPERM and aborts the whole package. Disabling npmRebuild is
+# the documented, safe escape hatch in that case.
+npmRebuild: false
 # The reaper runs under Electron-as-Node, which cannot read inside app.asar.
 asarUnpack:
   - lib/reaper.js

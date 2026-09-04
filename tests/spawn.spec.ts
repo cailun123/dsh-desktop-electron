@@ -117,7 +117,7 @@ describe('spawnWebLaunch', () => {
         }, { env }))
         expect(result.code).toBe(0)
         expect(result.signal).toBeNull()
-        expect(result.stdout.trim()).toBe('args:"web" "--host" "127.0.0.1" "--port" "0"')
+        expect(result.stdout.trim()).toBe('args:"web" "--host" "127.0.0.1" "--port" "0" "--no-open"')
         expect(result.stderr).toBe('')
       }
     } finally {

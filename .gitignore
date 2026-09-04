@@ -2,3 +2,7 @@ lib/
 release/
 node_modules/
 *.tsbuildinfo
+.tmp/
+scripts/test-fork.cjs
+scripts/test-spawn.cjs
+scripts/manual-smoke-debug.cjs

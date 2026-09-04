@@ -11,11 +11,20 @@ import { join } from 'node:path'
 import type { Readable } from 'node:stream'
 import crossSpawn from 'cross-spawn'
 
-/** Server flags every surface launch passes to `dsh web`. Port 0 requests an OS-assigned port (headless already uses this). */
-export const WEB_ARGS = ['web', '--host', '127.0.0.1', '--port', '0'] as const
+/**
+ * Server flags every surface launch passes to `dsh web`. Port 0 requests an
+ * OS-assigned port (headless already uses this); `--no-open` stops `dsh web`
+ * from launching its own browser tab, which would duplicate the shell's hosted
+ * GUI window.
+ */
+export const WEB_ARGS = ['web', '--host', '127.0.0.1', '--port', '0', '--no-open'] as const
 
-/** The stdout prefix `dsh web` prints once the server listens. */
-const READY_LINE_PREFIX = 'dsh web: '
+/**
+ * The readiness line: `dsh web: <URL>[ (LAN: ...)]`. The URL is the first
+ * whitespace-delimited token after the prefix; anything after it (dsh 0.1.x
+ * may append an authenticated LAN URL in parentheses) is ignored.
+ */
+const READY_LINE_RE = /^dsh web:\s*(\S+)(?:\s|$)/u
 
 /** How to spawn the Web server: executable, argv, extra env, cwd, and the resolution source for diagnostics. */
 export interface WebServerLaunch {
@@ -140,17 +149,19 @@ export function spawnWebLaunch(
 }
 
 /**
- * Extract the server URL from one readiness line — `dsh web: http://127.0.0.1:PORT`
- * with an optional LAN note — or undefined for any other line. The URL must
- * carry an explicit port: the readiness line always does, and a port-less
- * fragment (`http://127`) is how a line split across stdout chunks looks mid-way.
+ * Extract the server URL from one readiness line — `dsh web: <URL>`, with an
+ * optional authenticated LAN note (dsh 0.1.2 prints
+ * `dsh web: http://127.0.0.1:PORT/?token=… (LAN: …)`) — or undefined for any
+ * other line. The URL must carry an explicit port: the readiness line always
+ * does, and a port-less fragment (`http://127`) is how a line split across
+ * stdout chunks looks mid-way (the regex then fails to match until the full
+ * token has arrived).
  * @param line - one complete line of child stdout, without its trailing newline.
  * @returns the advertised URL, or undefined when the line is not a readiness line.
  */
 export function parseReadyLine(line: string): URL | undefined {
-  const trimmed = line.trim()
-  if (!trimmed.startsWith(READY_LINE_PREFIX)) return undefined
-  const candidate = trimmed.slice(READY_LINE_PREFIX.length).split(' ')[0]
+  const match = READY_LINE_RE.exec(line.trim())
+  const candidate = match?.[1]
   if (candidate === undefined) return undefined
   try {
     const url = new URL(candidate)
@@ -247,8 +258,16 @@ export interface HttpOkOptions {
 }
 
 /**
- * Poll the server URL until it answers HTTP 200. Each attempt carries a short
- * abort deadline so a wedged server cannot stall the poll past the overall timeout.
+ * Poll the server URL until it answers HTTP at all. Each attempt carries a
+ * short abort deadline so a wedged server cannot stall the poll past the
+ * overall timeout.
+ *
+ * Any HTTP status — not just 200 — proves the server is listening. dsh
+ * 0.1.2's browser-trust fence answers an unauthenticated probe of the token
+ * URL with a 303 cookie exchange (a cookieless client lands on 401), so
+ * waiting for 200 would misreport the live server as unreachable. A stranger's
+ * server answering on the port is rejected separately after this poll by the
+ * child-exit adoption check in `main.ts`.
  * @param url - the readiness-line URL.
  * @param options - timeout, poll cadence, and an injectable fetch for tests.
  */
@@ -261,8 +280,10 @@ export async function waitForHttpOk(url: URL, options: HttpOkOptions = {}): Prom
   while (Date.now() < deadline) {
     try {
       const response = await fetchImpl(url, { signal: AbortSignal.timeout(2_000) })
-      if (response.ok) return
-      lastError = new Error(`HTTP ${response.status}`)
+      // Any completed HTTP response means the socket is served by a live
+      // HTTP stack; the status is dsh's business (303/401 are its auth fence).
+      void response
+      return
     } catch (error) {
       lastError = error
     }

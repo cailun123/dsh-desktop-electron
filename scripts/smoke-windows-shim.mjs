@@ -1,7 +1,7 @@
 /** Exercise the built Electron app through a Windows npm-style command shim. */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -14,7 +14,7 @@ if (process.platform !== 'win32') {
 const require_ = createRequire(import.meta.url)
 const electronPath = require_('electron')
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)))
-const fixture = join(packageDir, 'tests', 'fixtures', 'dsh-web-fixture.mjs')
+const fixtureSource = join(packageDir, 'tests', 'fixtures', 'dsh-web-fixture.mjs')
 
 /** Await one promise with a bounded failure message. */
 async function withTimeout(promise, milliseconds, message) {
@@ -66,6 +66,12 @@ let stderr = ''
 
 try {
   await mkdir(shimDirectory)
+  // The shim is a .cmd batch file, which cmd.exe parses with the system OEM
+  // codepage — a fixture path containing non-ASCII characters (e.g. a CJK
+  // project folder name) would be mangled. Copy the fixture to the ASCII
+  // temp shim directory and reference the copy instead.
+  const fixture = join(shimDirectory, 'dsh-web-fixture.mjs')
+  await copyFile(fixtureSource, fixture)
   await writeFile(shim, `@echo off\r\n"${process.execPath}" "${fixture}" %*\r\n`, 'utf8')
 
   const env = {
@@ -77,7 +83,10 @@ try {
   }
   delete env.ELECTRON_RUN_AS_NODE
 
-  electron = spawn(electronPath, ['.'], {
+  // Isolate userData: the single-instance lock is keyed on it, so a running
+  // installed/previous instance would otherwise make the child quit silently
+  // at the lock gate and the smoke would fail before exercising anything.
+  electron = spawn(electronPath, ['--user-data-dir=' + join(temporaryRoot, 'userdata'), '.'], {
     cwd: packageDir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

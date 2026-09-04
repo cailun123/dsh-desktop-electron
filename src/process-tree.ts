@@ -55,6 +55,13 @@ export interface KillProcessTreeOptions {
    */
   readonly taskkill?: (pid: number) => Promise<void>
   /**
+   * Windows fallback when `taskkill` cannot even be started (missing tool or a
+   * denied spawn): terminates the tree root only, so the direct child at least
+   * dies. Defaults to `process.kill(pid)` (TerminateProcess on Windows).
+   * Primarily injectable for tests.
+   */
+  readonly directTerminate?: (pid: number) => void
+  /**
    * POSIX signal implementation; defaults to `process.kill`. Called with the
    * NEGATED group-leader pid (`-pid`), exactly as a detached process-group
    * kill needs.
@@ -147,7 +154,17 @@ export async function killProcessTree(pid: number, options: KillProcessTreeOptio
     try {
       await (options.taskkill ?? taskkillTree)(pid)
     } catch (error) {
-      logger(`taskkill failed for pid ${pid}: ${String(error)}`)
+      // taskkill could not be started at all (missing tool, denied spawn):
+      // terminate the tree root directly so the direct child at least dies,
+      // and report the escalation. Descendants are unreachable without a tree
+      // tool; the desktop's orphan reaper owns the hard-kill backup for them.
+      logger(`taskkill failed for pid ${pid}: ${String(error)}; falling back to direct termination`)
+      try {
+        ;(options.directTerminate ?? ((target: number) => { process.kill(target) }))(pid)
+      } catch (fallbackError) {
+        // ESRCH: the root is already gone — the desired outcome.
+        if (!isEsrch(fallbackError)) logger(`direct termination failed for pid ${pid}: ${String(fallbackError)}`)
+      }
     }
     return
   }

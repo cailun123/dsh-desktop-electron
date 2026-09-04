@@ -43,6 +43,19 @@ describe('parseReadyLine', () => {
   it('returns undefined when the URL part is not a URL', () => {
     expect(parseReadyLine('dsh web: not a url')).toBeUndefined()
   })
+
+  it('parses the authenticated readiness line of dsh 0.1.2-rc.1', () => {
+    // 0.1.2 attaches a per-connection token to the printed URL; the desktop
+    // window must open the authenticated URL so the /api browser-trust fence
+    // accepts it.
+    const url = parseReadyLine('dsh web: http://127.0.0.1:41790/?token=ecve0PWSYkVxhOlYzS5cSuIWzxGReXYiBMH-A7urdn4')
+    expect(url?.href).toBe('http://127.0.0.1:41790/?token=ecve0PWSYkVxhOlYzS5cSuIWzxGReXYiBMH-A7urdn4')
+  })
+
+  it('ignores the LAN note that follows the URL', () => {
+    const url = parseReadyLine('dsh web: http://127.0.0.1:34567/?token=abc (LAN: http://192.168.1.5:34567/?token=abc)')
+    expect(url?.href).toBe('http://127.0.0.1:34567/?token=abc')
+  })
 })
 
 describe('resolveWebLaunch', () => {
@@ -187,14 +200,27 @@ describe('waitForHttpOk', () => {
     await expect(waitForHttpOk(new URL('http://127.0.0.1:1/'), { fetchImpl, timeoutMs: 100, pollIntervalMs: 5 })).resolves.toBeUndefined()
   })
 
-  it('resolves once a failing server recovers', async () => {
+  it('accepts any HTTP status as proof the server is live (dsh 0.1.2 auth fence)', async () => {
+    // The 0.1.2 browser-trust fence answers an unauthenticated probe with a
+    // 303 cookie exchange (401 for a cookieless client). The readiness poll
+    // only proves the socket is served; the status is not ours to judge.
+    const fetchImpl = vi.fn(async () => new Response('redirect', { status: 303 }))
+    await expect(waitForHttpOk(new URL('http://127.0.0.1:1/?token=x'), { fetchImpl, timeoutMs: 100, pollIntervalMs: 5 })).resolves.toBeUndefined()
+  })
+
+  it('accepts the 401 of the auth fence as live-server proof', async () => {
+    const fetchImpl = vi.fn(async () => new Response('unauthorized', { status: 401 }))
+    await expect(waitForHttpOk(new URL('http://127.0.0.1:1/?token=x'), { fetchImpl, timeoutMs: 100, pollIntervalMs: 5 })).resolves.toBeUndefined()
+  })
+
+  it('resolves on the first answered probe even if it is a 503', async () => {
     let attempts = 0
     const fetchImpl = vi.fn(async () => {
       attempts += 1
       return attempts < 3 ? new Response('no', { status: 503 }) : new Response('ok', { status: 200 })
     })
     await expect(waitForHttpOk(new URL('http://127.0.0.1:1/'), { fetchImpl, timeoutMs: 200, pollIntervalMs: 5 })).resolves.toBeUndefined()
-    expect(attempts).toBe(3)
+    expect(attempts).toBe(1)
   })
 
   it('rejects with the URL when the server never answers', async () => {
@@ -203,12 +229,10 @@ describe('waitForHttpOk', () => {
       .rejects.toThrow(/http:\/\/127\.0\.0\.1:1\/.*ECONNREFUSED/)
   })
 
-  it('keeps polling and rejects when the server only answers non-2xx', async () => {
-    const fetchImpl = vi.fn(async () => new Response('nope', { status: 500 }))
+  it('rejects when the server never answers at all', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED') })
     await expect(waitForHttpOk(new URL('http://127.0.0.1:1/'), { fetchImpl, timeoutMs: 50, pollIntervalMs: 5 }))
-      .rejects.toThrow(/HTTP 500/)
-    // The poll must have retried until the deadline, not given up after one attempt.
-    expect(fetchImpl.mock.calls.length).toBeGreaterThan(1)
+      .rejects.toThrow(/ECONNREFUSED/)
   })
 })
 

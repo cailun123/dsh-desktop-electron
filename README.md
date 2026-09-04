@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 An Electron desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) Web GUI: it spawns `dsh web`, waits for the server's readiness line, and hosts the GUI in a standalone window with tray residency.
 
-The shell targets the public [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) package. It relies only on the maintained `dsh web --host <host> --port <port>` arguments and the `dsh web: <URL>` readiness line.
+The shell targets the public [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) package. It relies only on the maintained `dsh web --host <host> --port <port> --no-open` arguments and the `dsh web: <URL>` readiness line.
 
 > This repository is an independently maintained DSH desktop-shell project. It carries **no harness source code**; the backend is provided by a `dsh` installation on the host.
 
@@ -16,11 +16,14 @@ It is a **shell only**. It bundles no Node runtime and no harness closure — it
 
 | | |
 |---|---|
+| **Startup animation** | An animated splash appears the moment the app boots, and it is **only a breathing logo**: the whale, centered on a flat monochrome surface, swelling on a 4s cycle (scale 1 → 1.07 with brightness rising in phase). No wordmark, no lettering, no progress bar, no status line, no spinner, no rings, no gradients, no glow. It simply breathes for as long as the boot takes. Two colors on the whole page — the surface and the whale — following the system and the main program's (dsh GUI) theme, read from its settings.yaml: near-white paper with a black glyph in light mode, near-black graphite with a white glyph in dark. The GUI loads hidden behind the splash and the animation ends exactly when the main interface is rendered — dsh's own loading spinner is never visible |
 | **Window** | Sandboxed renderer (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`, no preload) — the GUI is a normal web application |
-| **Tray residency** | Closing the window hides it; the server keeps running. Only **Quit** terminates the server |
+| **Tray residency** | Closing the window hides it; the server keeps running. The tray menu is Codex-style: **New Topic**, the topics whose agent is currently **running**, and the most recent **topics** — each entry jumps straight into that conversation (via the server's own session-list RPC; sidebar row clicks are best-effort). Menu and tooltip follow dsh's `locale.preference` setting (zh/en, system language otherwise). Only **Quit** terminates the server. The tray icon always contrasts its surface — light glyph on a dark taskbar/menu bar, dark on a light one — and on Windows it reads the taskbar's *system* mode (`SystemUsesLightTheme`), not the apps mode `nativeTheme` reports, so the common "dark taskbar + light apps" setup still gets a readable glyph |
 | **Single instance** | A second launch focuses the existing window instead of starting a second server |
 | **No orphans** | Quit tree-kills the server; a reaper child also tree-kills it if the main process is ever hard-killed |
 | **Platforms** | Windows, macOS, Linux — pure Node/npm toolchain, no Rust/Go/Swift |
+
+A standalone, offline browser preview of the startup splash lives at [preview/splash-preview.html](preview/splash-preview.html) — open it directly (no app launch, no assets needed) to watch the breathing logo and the hand-off to the main window.
 
 ## Requirements
 
@@ -32,7 +35,7 @@ A working `dsh web`, resolved in this order:
 
 On Windows, the spawn boundary automatically resolves npm command shims reached through either `DSH_BIN` or `PATH`, including `.cmd` files. Arguments remain a separate vector: the shell does not enable a general command shell and does not require users to locate the package's JavaScript entry point.
 
-The server always listens on `127.0.0.1` with an OS-assigned port (`--port 0`), so it can never collide with an existing `dsh web` — a browser instance and this shell can run side by side.
+The server always listens on `127.0.0.1` with an OS-assigned port (`--port 0`), so it can never collide with an existing `dsh web`. It is spawned with `--no-open`, so `dsh web` never launches its own browser tab — the shell's window is the only GUI, and a browser instance can still run side by side.
 
 ## Run from source
 
@@ -61,7 +64,7 @@ Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn o
 ## Tests
 
 ```sh
-npm test        # 31 keyless cases: command resolution/spawn, readiness parsing, HTTP polling
+npm test        # 52 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination
 npm run test:electron:windows # built Electron lifecycle through a Windows npm .cmd shim
 npm run typecheck
 npm run dist:dir # unpacked app plus packaged production-closure verification
@@ -70,6 +73,8 @@ npm run dist:dir # unpacked app plus packaged production-closure verification
 ## Credits
 
 The shell, the launcher, and the process-tree primitive were developed in a harness fork and contributed upstream; this repository is the standalone extraction. Related standalone shells: [dsh-desktop](https://github.com/dsh-external/dsh-desktop) (Go/Wails, Windows), [dsh-desktop-mac](https://github.com/dsh-external/dsh-desktop-mac) (Swift/WKWebView), [deepseek-harness-desktop](https://github.com/omdsh-dev/deepseek-harness-desktop) (Wails + Node SEA).
+
+The startup animation's breathing-logo idiom is inspired by [OpenAI Codex](https://github.com/openai/codex)'s CLI presentation (Apache-2.0); the splash view plumbing began from the [dsh-splash-launcher](https://github.com/Isilsolme/dsh-splash-launcher) template (MIT). The whale glyph (`whale.png`) derives from the DeepSeek Harness web frontend assets (MIT, © 2026 DeepSeek); the DeepSeek name and whale logo are trademarks of their respective owner.
 
 ## License
 

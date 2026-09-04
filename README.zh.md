@@ -4,7 +4,7 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）Web GUI 的 Electron 桌面外壳：启动 `dsh web`，等待服务端的就绪行，把 GUI 托管在独立窗口里，并常驻托盘。
 
-本外壳面向公开发布的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 包。它仅依赖维护中的 `dsh web --host <host> --port <port>` 参数和 `dsh web: <URL>` 就绪行。
+本外壳面向公开发布的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 包。它仅依赖维护中的 `dsh web --host <host> --port <port> --no-open` 参数和 `dsh web: <URL>` 就绪行。
 
 > 本仓库是独立维护的 DSH 桌面外壳项目，**不携带任何 harness 源码**；后端由主机上的 `dsh` 安装提供。
 
@@ -16,11 +16,14 @@ Web GUI 是 harness 交互最丰富的界面，但平常只活在浏览器标签
 
 | | |
 |---|---|
+| **启动动画** | 启动瞬间即现的动画窗口，画面上**只有一只呼吸的鲸鱼**：单色底面正中，4 秒一个呼吸周期（缩放 1 → 1.07 与明暗 0.72 → 1 同相起落）。没有字标、没有文字、没有进度条、没有状态行、没有转圈加载器、没有光环与渐变——启动要多久它就呼吸多久。整页只有底色与鲸鱼两种颜色，跟随系统与**主程序（dsh GUI）主题**（从 settings.yaml 读取）：日间纸白黑鲸、夜间石墨黑白鲸。GUI 在动画层背后预载，动画结束时正好是主界面 —— dsh 自己的转圈载入界面全程被盖住 |
 | **窗口** | 沙箱化渲染进程（`sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`、无 preload）—— GUI 就是一个普通 Web 应用 |
-| **托盘常驻** | 关闭窗口只是隐藏，服务端继续运行；只有**退出**才终止服务端 |
+| **托盘常驻** | 关闭窗口只是隐藏，服务端继续运行。托盘菜单对齐 Codex：**新话题**、正在运行的**话题**与最近**话题** —— 点一下直达那个会话（数据来自服务端自身的 session-list RPC；侧栏行点击为尽力而为）。菜单与悬停提示跟随 dsh 的 `locale.preference` 设置（中/英，未设置则跟随系统语言）。只有**退出**才终止服务端。托盘图标始终与其所在表面反色以增强可读性：深色任务栏/菜单栏用白色鲸鱼，浅色用黑色鲸鱼。Windows 上读取的是任务栏所跟随的**系统**模式（注册表 `SystemUsesLightTheme`），而非 `nativeTheme` 报告的应用模式，因此常见的"深色任务栏 + 浅色应用"设置下图标依然清晰可辨 |
 | **单实例** | 二次启动聚焦已有窗口，而不是再起一个服务端 |
 | **不留孤儿进程** | 退出时 tree-kill 服务端；即使主进程被硬杀（任务管理器、崩溃），reaper 子进程也会补上这次清理 |
 | **平台** | Windows、macOS、Linux —— 纯 Node/npm 工具链，无需 Rust/Go/Swift |
+
+启动画面的独立浏览器预览在 [preview/splash-preview.html](preview/splash-preview.html)：直接双击打开即可（无需启动应用、无网络依赖）查看呼吸 Logo 与就绪交接效果。
 
 ## 前置要求
 
@@ -32,7 +35,7 @@ Web GUI 是 harness 交互最丰富的界面，但平常只活在浏览器标签
 
 在 Windows 上，spawn 边界会自动解析通过 `DSH_BIN` 或 `PATH` 找到的 npm 命令 shim，包括 `.cmd` 文件。参数始终保持独立向量：外壳不会启用通用命令 shell，也不要求用户自行定位 npm 包的 JavaScript 入口点。
 
-服务端始终监听 `127.0.0.1`，端口由操作系统分配（`--port 0`），因此永远不会和已有的 `dsh web` 冲突 —— 浏览器实例和这个外壳可以同时开着。
+服务端始终监听 `127.0.0.1`，端口由操作系统分配（`--port 0`），因此永远不会和已有的 `dsh web` 冲突。启动时带 `--no-open`，`dsh web` 不会自行打开浏览器标签页 —— 外壳窗口是唯一的 GUI，浏览器实例仍可与外壳同时开着。
 
 ## 从源码运行
 
@@ -61,7 +64,7 @@ npm run dist:dir    # 只输出未打包目录，用于快速冒烟
 ## 测试
 
 ```sh
-npm test        # 31 个无密钥用例：命令解析与 spawn、就绪行解析、HTTP 轮询
+npm test        # 52 个无密钥用例：命令解析与 spawn、就绪行解析、HTTP 轮询、进程树终止
 npm run test:electron:windows # 通过 Windows npm .cmd shim 验证构建后的 Electron 生命周期
 npm run typecheck
 npm run dist:dir # 解包应用及打包生产依赖闭包验证
@@ -70,6 +73,8 @@ npm run dist:dir # 解包应用及打包生产依赖闭包验证
 ## 来源
 
 外壳、launcher 与 process-tree 原语是在一个 harness fork 中开发并已贡献回上游；本仓库是其独立抽取版本。相关的独立桌面外壳实现：[dsh-desktop](https://github.com/dsh-external/dsh-desktop)（Go/Wails，Windows）、[dsh-desktop-mac](https://github.com/dsh-external/dsh-desktop-mac)（Swift/WKWebView）、[deepseek-harness-desktop](https://github.com/omdsh-dev/deepseek-harness-desktop)（Wails + Node SEA）。
+
+启动动画的"呼吸 Logo"手法参照 [OpenAI Codex](https://github.com/openai/codex)（Apache-2.0）的 CLI 呈现；启动层的视图管线最初以 [dsh-splash-launcher](https://github.com/Isilsolme/dsh-splash-launcher)（MIT）为模板。`whale.png` 黑鲸派生自 DeepSeek Harness 前端素材（MIT © 2026 DeepSeek），DeepSeek 名称与鲸鱼 Logo 为各自权利人的商标。
 
 ## 许可
 
