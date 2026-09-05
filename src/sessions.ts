@@ -17,7 +17,17 @@
  * RPC. Session summaries carry everything the tray needs: `running` (the
  * agent's live state, authoritative on the host), `updatedAt`, and the title
  * projection. Subagent child sessions are filtered so the menu lists topics.
+ *
+ * `session/list` has no archive flag, and the harness keeps an archived
+ * session in its store (it only leaves the workspace's visible list), so the
+ * feed also reads the workspace baseline — the first frame of the GUI's
+ * `workspace/follow` stream over the `/api/remote.mux` WebSocket — and drops
+ * sessions the user archived. That baseline needs the cookie on the WebSocket
+ * upgrade, which the WHATWG `WebSocket` global cannot send; the `ws` client
+ * can, so it is the one runtime dependency here.
  */
+
+import WebSocket from 'ws'
 
 /** One top-level session ("topic") as shown in the tray menu. */
 export interface SessionSummary {
@@ -34,6 +44,9 @@ export interface SessionSummary {
 
 /** The unary RPC endpoint that lists session summaries. */
 export const SESSION_LIST_ENDPOINT = 'session/list'
+
+/** The stream endpoint whose first frame carries the workspace baseline. */
+export const WORKSPACE_FOLLOW_ENDPOINT = 'workspace/follow'
 
 /**
  * Build the JSON body of one unary client request. Exported for tests; the
@@ -83,6 +96,35 @@ export function extractAuthCookie(setCookie: readonly string[]): string | undefi
     if (pair.startsWith('dsh-auth-') && pair.includes('=')) return pair
   }
   return undefined
+}
+
+/**
+ * Parse the workspace baseline (the first `workspace/follow` frame's value)
+ * into the set of archived session ids. Strict shape: a future harness that
+ * reshapes the frame yields an error the caller surfaces as "no archive
+ * information", never a silently empty archive set presented as truth.
+ */
+export function parseWorkspaceBaseline(value: unknown): Set<string> {
+  if (typeof value !== 'object' || value === null) throw new Error('dsh web: workspace baseline is not an object')
+  const record = value as Record<string, unknown>
+  if (record.type !== 'baseline' || typeof record.value !== 'object' || record.value === null) {
+    throw new Error('dsh web: workspace baseline frame is malformed')
+  }
+  const baseline = record.value as Record<string, unknown>
+  if (!Array.isArray(baseline.archivedSessionIds)) {
+    throw new Error('dsh web: workspace baseline has no archivedSessionIds')
+  }
+  const ids = new Set<string>()
+  for (const id of baseline.archivedSessionIds) {
+    if (typeof id === 'string' && id !== '') ids.add(id)
+  }
+  return ids
+}
+
+/** Drop archived sessions from tray summaries. */
+export function filterArchived(summaries: readonly SessionSummary[], archived: ReadonlySet<string>): SessionSummary[] {
+  if (archived.size === 0) return [...summaries]
+  return summaries.filter((session) => !archived.has(session.sessionId))
 }
 
 /**
@@ -155,6 +197,68 @@ export function relativeAge(updatedAt: number, now: number): string {
 /** Minimal fetch surface the feed needs (injectable for tests). */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>
 
+/** Minimal socket surface the workspace baseline needs (injectable for tests). */
+export interface WsLike {
+  send(data: string): void
+  close(): void
+  on(event: 'open' | 'message' | 'error' | 'close', handler: (data?: unknown) => void): unknown
+}
+
+/** Creates one WebSocket; `ws` in production, a scripted fake in tests. */
+export type WebSocketFactory = (url: string, options: { headers: Record<string, string> }) => WsLike
+
+/** Bound on waiting for the workspace baseline before giving up for this poll. */
+const BASELINE_TIMEOUT_MS = 5_000
+
+/**
+ * Open the `workspace/follow` stream, take its baseline frame, and leave.
+ * One socket per poll: the tray only needs the archived set, and a stateless
+ * one-shot avoids reconnect/backoff machinery for a stream it never listens
+ * to after the first frame.
+ */
+async function openWorkspaceBaseline(url: string, cookie: string | undefined, factory: WebSocketFactory): Promise<unknown> {
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    let streamId: string | undefined
+    const socket = factory(url, { headers: cookie === undefined ? {} : { cookie } })
+    const finish = (outcome: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { socket.close() } catch { /* already closing */ }
+      outcome()
+    }
+    const fail = (error: Error): void => finish(() => { reject(error) })
+    const timer = setTimeout(() => { fail(new Error('dsh web: workspace baseline timed out')) }, BASELINE_TIMEOUT_MS)
+    socket.on('open', () => {
+      streamId = `desktop-baseline-${String(Date.now())}`
+      socket.send(JSON.stringify({ type: 'open', streamId, endpoint: WORKSPACE_FOLLOW_ENDPOINT, payload: { args: {} } }))
+    })
+    socket.on('message', (data) => {
+      let frame: Record<string, unknown>
+      try {
+        frame = JSON.parse(String(data)) as Record<string, unknown>
+      } catch {
+        return // Foreign or non-JSON mux traffic is not ours to judge.
+      }
+      if (frame.streamId !== streamId) return
+      if (frame.type === 'item') {
+        try { if (streamId !== undefined) socket.send(JSON.stringify({ type: 'cancel', streamId })) } catch { /* best-effort */ }
+        finish(() => { resolve(frame.value) })
+        return
+      }
+      if (frame.type === 'error') {
+        const error = frame.error as Record<string, unknown> | undefined
+        fail(new Error(`dsh web: workspace stream error (${String(error?.code ?? 'unknown')})`))
+        return
+      }
+      if (frame.type === 'end') fail(new Error('dsh web: workspace stream ended before its baseline'))
+    })
+    socket.on('error', () => { fail(new Error('dsh web: workspace stream failed')) })
+    socket.on('close', () => { fail(new Error('dsh web: workspace stream closed before its baseline')) })
+  })
+}
+
 /**
  * Fetches session summaries from the running `dsh web`. Auth is lazy and
  * self-healing: the first RPC exchanges the readiness token for the auth
@@ -164,22 +268,34 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>
 export class SessionFeed {
   private readonly serverUrl: URL
   private readonly fetchImpl: FetchLike
+  private readonly webSocketFactory: WebSocketFactory
   private cookie: string | undefined
+  /** In-flight auth exchange, so parallel poll branches share one hop. */
+  private authPromise: Promise<void> | undefined
   private rpcCounter = 0
+  /** Last known archived set; kept across baseline failures so a blip never un-archives anything. */
+  private archivedSessionIds: Set<string> = new Set()
 
-  constructor(serverUrl: URL, fetchImpl: FetchLike = fetch) {
+  constructor(serverUrl: URL, fetchImpl: FetchLike = fetch, webSocketFactory: WebSocketFactory = defaultWebSocketFactory) {
     this.serverUrl = serverUrl
     this.fetchImpl = fetchImpl
+    this.webSocketFactory = webSocketFactory
   }
 
   /**
-   * List top-level session summaries, most recently active first. Throws when
-   * the server cannot be reached or answers with an RPC error; the caller
-   * decides how stale data is surfaced.
+   * List top-level session summaries, most recently active first, with the
+   * user's archived sessions dropped. Throws when the server cannot be
+   * reached or answers with an RPC error; the caller decides how stale data
+   * is surfaced. A failed archive fetch is not fatal: the previous set stays
+   * in force so a WebSocket blip never resurrects archived topics.
    */
   async list(): Promise<SessionSummary[]> {
-    const value = await this.call(SESSION_LIST_ENDPOINT, { _request: {} })
-    return normalizeSessionSummaries(value)
+    const [summaries, archived] = await Promise.all([
+      this.call(SESSION_LIST_ENDPOINT, { _request: {} }).then(normalizeSessionSummaries),
+      this.refreshArchivedSessionIds().catch(() => undefined),
+    ])
+    if (archived !== undefined) this.archivedSessionIds = archived
+    return filterArchived(summaries, this.archivedSessionIds)
   }
 
   /**
@@ -221,6 +337,13 @@ export class SessionFeed {
    * API fence (which does not exist there either) is called bare.
    */
   private async authenticate(): Promise<void> {
+    if (this.authPromise === undefined) {
+      this.authPromise = this.exchangeTokenForCookie().finally(() => { this.authPromise = undefined })
+    }
+    await this.authPromise
+  }
+
+  private async exchangeTokenForCookie(): Promise<void> {
     const token = this.serverUrl.searchParams.get('token')
     if (token === null) return
     const response = await this.fetchImpl(`${this.serverUrl.origin}/?token=${encodeURIComponent(token)}`, {
@@ -229,7 +352,18 @@ export class SessionFeed {
     })
     this.cookie = extractAuthCookie(response.headers.getSetCookie())
   }
+
+  /** One baseline fetch per poll; shares the authenticated cookie. */
+  private async refreshArchivedSessionIds(): Promise<Set<string>> {
+    if (this.cookie === undefined) await this.authenticate()
+    const url = `${this.serverUrl.origin.replace(/^http/, 'ws')}/api/remote.mux`
+    const value = await openWorkspaceBaseline(url, this.cookie, this.webSocketFactory)
+    return parseWorkspaceBaseline(value)
+  }
 }
+
+/** The `ws` client: the WHATWG global cannot send the cookie on the upgrade. */
+const defaultWebSocketFactory: WebSocketFactory = (url, options) => new WebSocket(url, { headers: options.headers })
 
 /** Marker for the re-auth + retry path; never shown to the user. */
 class UnauthorizedError extends Error {

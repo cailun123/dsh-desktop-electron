@@ -19,12 +19,14 @@
     "verify:package": "node scripts/verify-packaged-closure.mjs"
   },
   "dependencies": {
-    "cross-spawn": "7.0.6"
+    "cross-spawn": "7.0.6",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "@types/cross-spawn": "6.0.6",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
     "typescript": "^6.0.3",

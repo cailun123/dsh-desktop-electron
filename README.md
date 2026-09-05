@@ -8,22 +8,50 @@ The shell targets the public [`@deepseek-ai/dsh`](https://www.npmjs.com/package/
 
 > This repository is an independently maintained DSH desktop-shell project. It carries **no harness source code**; the backend is provided by a `dsh` installation on the host.
 
-## What this is
+## Why a shell
 
 The Web GUI is the harness's richest surface but normally lives in a browser tab: no taskbar presence, no tray, and every launch means opening a terminal and keeping the tab alive. This shell makes it a real desktop window.
 
 It is a **shell only**. It bundles no Node runtime and no harness closure — it runs whatever `dsh web` your machine already provides, so it stays correct across harness upgrades instead of pinning a snapshot.
 
-| | |
-|---|---|
-| **Startup animation** | An animated splash appears the moment the app boots, and it is **only a breathing logo**: the whale, centered on a flat monochrome surface, swelling on a 4s cycle (scale 1 → 1.07 with brightness rising in phase). No wordmark, no lettering, no progress bar, no status line, no spinner, no rings, no gradients, no glow. It simply breathes for as long as the boot takes. Two colors on the whole page — the surface and the whale — following the system and the main program's (dsh GUI) theme, read from its settings.yaml: near-white paper with a black glyph in light mode, near-black graphite with a white glyph in dark. The GUI loads hidden behind the splash and the animation ends exactly when the main interface is rendered — dsh's own loading spinner is never visible |
-| **Window** | Sandboxed renderer (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`, no preload) — the GUI is a normal web application |
-| **Tray residency** | Closing the window hides it; the server keeps running. The tray menu is Codex-style: **New Topic**, the topics whose agent is currently **running**, and the most recent **topics** — each entry jumps straight into that conversation (via the server's own session-list RPC; sidebar row clicks are best-effort). Menu and tooltip follow dsh's `locale.preference` setting (zh/en, system language otherwise). Only **Quit** terminates the server. The tray icon always contrasts its surface — light glyph on a dark taskbar/menu bar, dark on a light one — and on Windows it reads the taskbar's *system* mode (`SystemUsesLightTheme`), not the apps mode `nativeTheme` reports, so the common "dark taskbar + light apps" setup still gets a readable glyph |
-| **Single instance** | A second launch focuses the existing window instead of starting a second server |
-| **No orphans** | Quit tree-kills the server; a reaper child also tree-kills it if the main process is ever hard-killed |
-| **Platforms** | Windows, macOS, Linux — pure Node/npm toolchain, no Rust/Go/Swift |
+## Features
 
-A standalone, offline browser preview of the startup splash lives at [preview/splash-preview.html](preview/splash-preview.html) — open it directly (no app launch, no assets needed) to watch the breathing logo and the hand-off to the main window.
+### Startup splash
+
+An animated splash appears the moment the app boots — a breathing logo and a typing wordmark:
+
+- The whale, centered on a flat monochrome surface, breathing on a 2.8s cycle (scale 1 → 1.05, opacity 0.7 → 1). Beneath it, the wordmark `DEEPSEEK HARNESS` types in character by character as the progress readout — a constant, never-stalling rhythm (fake progress by design); once fully revealed, a DeepSeek-blue block cursor keeps blinking so the load always reads as ongoing. No progress-bar widgets, no status line, no spinner, no rings, no gradients, no glow.
+- The palette follows the system and the main program's (dsh GUI) theme, read from its `settings.yaml`: near-white paper with a black glyph in light mode, near-black graphite with a white glyph in dark. The blinking cursor is the page's only accent, in the harness brand blue.
+- The GUI loads hidden behind the splash, and the animation ends exactly when the main interface is rendered — dsh's own loading spinner is never visible.
+- A standalone, offline browser preview lives at [preview/splash-preview.html](preview/splash-preview.html): open it directly (no app launch, no assets needed) to watch the breathing logo and the hand-off to the main window.
+
+### Fused title bar
+
+Codex-style: the window has **no native title bar** — the GUI's own top strip *is* the chrome, so the program reads as one continuous surface instead of a chrome-framed page.
+
+- The sidebar brand row and the conversation header (breadcrumb, tabs, actions) become the draggable title bar; every control inside them stays clickable. In the hero state (no session open) the empty strip above the centered composer is draggable too.
+- The OS window controls are drawn **on top of** the web surface: the Windows Window Controls Overlay (Linux follows the same scheme), inset traffic lights on macOS. The GUI's header keeps a clearance so nothing interactive lands under the controls.
+- The controls' palette follows the GUI's live theme — dark surfaces get white glyphs, light ones black — synced from the theme color the GUI's own theme presenter publishes, with no preload and no IPC channel.
+
+### Window and renderer security
+
+- Sandboxed renderer (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`, no preload) — the GUI is a normal web application.
+- Anything that opens a new window or navigates off the server origin goes to the system browser, restricted to `http(s)`; unparsable targets are dropped.
+- The server always listens on `127.0.0.1` with an OS-assigned port (`--port 0`), so it can never collide with an existing `dsh web`.
+- The server is spawned with `--no-open`, so `dsh web` never launches its own browser tab — the shell's window is the only GUI, and a browser instance can still run side by side.
+
+### Tray residency
+
+- Closing the window only hides it; the server keeps running. Only **Quit** terminates the server.
+- The tray menu is Codex-style: **New Topic**, the topics whose agent is currently **running**, and the most recent **topics** — each entry jumps straight into that conversation (via the server's own session-list RPC; sidebar row clicks are best-effort). Archived topics are dropped: the feed also reads the workspace's archived set (the baseline of the server's `workspace/follow` stream), and if that fetch fails the last known set stays in force, so a blip never resurrects archived topics.
+- Menu and tooltip follow dsh's `locale.preference` setting (zh/en, system language otherwise).
+- The tray icon always contrasts its surface — light glyph on a dark taskbar/menu bar, dark on a light one. On Windows it reads the taskbar's *system* mode (`SystemUsesLightTheme`), not the apps mode `nativeTheme` reports, so the common "dark taskbar + light apps" setup still gets a readable glyph.
+
+### Lifecycle
+
+- **Single instance** — a second launch focuses the existing window instead of starting a second server.
+- **No orphans** — quit tree-kills the server; a reaper child also tree-kills it if the main process is ever hard-killed.
+- **Platforms** — Windows, macOS, Linux; pure Node/npm toolchain, no Rust/Go/Swift.
 
 ## Requirements
 
@@ -35,39 +63,38 @@ A working `dsh web`, resolved in this order:
 
 On Windows, the spawn boundary automatically resolves npm command shims reached through either `DSH_BIN` or `PATH`, including `.cmd` files. Arguments remain a separate vector: the shell does not enable a general command shell and does not require users to locate the package's JavaScript entry point.
 
-The server always listens on `127.0.0.1` with an OS-assigned port (`--port 0`), so it can never collide with an existing `dsh web`. It is spawned with `--no-open`, so `dsh web` never launches its own browser tab — the shell's window is the only GUI, and a browser instance can still run side by side.
+## Getting started
 
-## Run from source
+### Run from source
 
 ```sh
 npm install
 DSH_HOME=~/.dsh/source/current npm run dev
 ```
 
-## Package
+### Package
 
 ```sh
 npm run dist        # installers under release/
 npm run dist:dir    # unpacked dir only, for a quick smoke
 ```
 
-Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn on first run. The packaged app still needs a `dsh` on the host — see Requirements.
+Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn on first run. The packaged app still needs a `dsh` on the host — see [Requirements](#requirements).
 
 ## Behavior notes
 
 - **Windows permission mode.** Windows has no harness confinement backend, so the CLI's default `workspace-write` mode cannot boot there. When `DSH_PERMISSION_MODE` is unset the shell falls back to `danger-full-access` (approval prompts disabled) and logs a warning. Set `DSH_PERMISSION_MODE` explicitly to override.
 - **Tree termination.** On Windows the kill is `taskkill /T /F`, because `child.kill()` is `TerminateProcess` of the direct child only. On POSIX the server is spawned detached and the whole process group is signalled, SIGTERM then SIGKILL after a grace period. The server does not run a graceful-dispose path; session data is written per event to JSONL, so a killed server loses nothing already logged.
-- **External links.** Anything that opens a new window or navigates off the server origin goes to the system browser, restricted to `http(s)`; unparsable targets are dropped.
 - **Workspace semantics** are the CLI's: the invoking directory is the default project root. Launching from a desktop shortcut starts in the shell's cwd, so prefer opening the app from a project directory or picking the Workspace in the GUI.
 - **Logs.** The server's stdout is forwarded with a `[dsh web]` prefix; run the app from a terminal to see both streams.
 
 ## Tests
 
 ```sh
-npm test        # 52 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination
-npm run test:electron:windows # built Electron lifecycle through a Windows npm .cmd shim
+npm test                        # 116 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination, splash timeline, session feed, title bar fusion
+npm run test:electron:windows   # built Electron lifecycle through a Windows npm .cmd shim
 npm run typecheck
-npm run dist:dir # unpacked app plus packaged production-closure verification
+npm run dist:dir                # unpacked app plus packaged production-closure verification
 ```
 
 ## Credits

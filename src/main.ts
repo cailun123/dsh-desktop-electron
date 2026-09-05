@@ -10,6 +10,11 @@
  * from the server's own session-list RPC, see `sessions.ts`), plus a New
  * Topic shortcut — each jumping straight into that conversation.
  *
+ * The window itself is Codex-style too (`titlebar.ts`): no native title bar —
+ * the GUI's own top strip (sidebar brand row, conversation header) becomes
+ * the draggable chrome via injected CSS, and the OS window controls are
+ * drawn as an overlay whose palette follows the GUI's live theme.
+ *
  * Startup is two-layered in one window (`splash.ts`): the window appears
  * immediately with the animated splash on a `WebContentsView` layered above
  * the window's own webContents. The real GUI then loads behind the splash,
@@ -33,6 +38,7 @@ import { SessionFeed } from './sessions.ts'
 import type { SessionSummary } from './sessions.ts'
 import { resolveTrayLanguage, trayMenuTemplate, trayTooltip } from './tray-menu.ts'
 import { queryWindowsSystemUsesLightTheme, traySurfaceIsDark } from './system-theme.ts'
+import { TITLEBAR_SURFACE_PROBE, overlayPaletteForSurface, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
 import type { TrayLang } from './tray-menu.ts'
 const APP_ID = 'ai.deepseek.dsh-desktop'
 const WINDOW_TITLE = 'DeepSeek Harness'
@@ -52,6 +58,8 @@ const GUI_READY_PROBE_MS = 20_000
 const GUI_READY_POLL_MS = 150
 /** Poll cadence for the tray's session (topic) feed. */
 const SESSION_POLL_MS = 10_000
+/** Poll cadence for the title bar overlay's theme-color sync. */
+const TITLEBAR_SYNC_POLL_MS = 3_000
 /** dsh's UI theme preference: 'dark' | 'light' | 'system'. */
 type ThemePreference = 'dark' | 'light' | 'system'
 /**
@@ -156,6 +164,10 @@ let sessionPollTimer: NodeJS.Timeout | undefined
 let sessionFeedError: string | undefined
 /** Tray menu language, resolved once at boot (dsh preference, else system). */
 let trayLang: TrayLang = 'en'
+/** Poll timer keeping the title bar overlay palette in sync with the GUI theme. */
+let titlebarSyncTimer: NodeJS.Timeout | undefined
+/** Last surface color the overlay was synced to, so the poll only acts on changes. */
+let titlebarSurface: string | undefined
 
 function iconPath(): string {
   return join(PACKAGE_DIR, 'build', 'icon.png')
@@ -282,6 +294,13 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     backgroundColor: splashBackgroundColor(),
     icon: iconPath(),
+    // Codex-style title bar fusion (see titlebar.ts): no native title bar —
+    // the GUI's own top strip becomes the draggable chrome and the OS window
+    // controls are drawn as an overlay on top of the web surface. The initial
+    // overlay palette comes from dsh's theme preference so even the controls
+    // match before the GUI has rendered; the live palette follows the GUI
+    // once ready (installTitlebarFusion).
+    ...windowChromeOptions(process.platform, THEME_PREFERENCE, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -400,6 +419,63 @@ function isTransparentColor(value: string): boolean {
   if (match === null) return false
   const alpha = match[1]?.trim()
   return alpha !== undefined && alpha !== '' && Number.parseFloat(alpha) === 0
+}
+
+/**
+ * Turn the GUI's top strip into the window chrome (the CSS in `titlebar.ts`)
+ * and keep the overlay window controls' palette in sync with the GUI's live
+ * theme. The poll re-reads the theme-color meta the GUI's theme presenter
+ * maintains — the shell stays preload-free, so polling is the theme-change
+ * signal. Failures are best-effort: a missed poll just leaves the previous
+ * palette in place.
+ * @param window - the window hosting the GUI.
+ * @param guiSurface - the GUI body background reported by the readiness
+ *   probe, applied immediately when available (the poll covers later changes).
+ */
+function installTitlebarFusion(window: BrowserWindow, guiSurface?: string): void {
+  if (guiSurface !== undefined) applyTitlebarSurface(window, guiSurface)
+  void window.webContents.insertCSS(titlebarFusionCss(process.platform)).catch((error: unknown) => {
+    console.error(`[dsh-desktop] failed to inject title bar CSS: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  if (titlebarSyncTimer !== undefined) clearInterval(titlebarSyncTimer)
+  titlebarSyncTimer = setInterval(() => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) {
+      stopTitlebarSync()
+      return
+    }
+    void window.webContents.executeJavaScript(TITLEBAR_SURFACE_PROBE).then((value) => {
+      if (typeof value !== 'string' || value === titlebarSurface) return
+      applyTitlebarSurface(window, value)
+    }).catch(() => {
+      // Mid-navigation or not yet ready; the next poll re-reads the meta.
+    })
+  }, TITLEBAR_SYNC_POLL_MS)
+  titlebarSyncTimer.unref()
+}
+
+function stopTitlebarSync(): void {
+  if (titlebarSyncTimer !== undefined) {
+    clearInterval(titlebarSyncTimer)
+    titlebarSyncTimer = undefined
+  }
+}
+
+/**
+ * Apply one GUI surface color to the overlay window controls. Feature-detected
+ * and guarded: `setTitleBarOverlay` is Windows/Linux only and can reject on
+ * OS builds without the overlay, in which case the default glyphs stay.
+ * @param window - the window whose overlay should follow the GUI.
+ * @param surface - a CSS color from the theme-color meta or the readiness probe.
+ */
+function applyTitlebarSurface(window: BrowserWindow, surface: string): void {
+  const palette = overlayPaletteForSurface(surface)
+  if (palette === undefined) return
+  titlebarSurface = surface
+  try {
+    window.setTitleBarOverlay(palette)
+  } catch (error) {
+    console.error(`[dsh-desktop] failed to update title bar overlay: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 function createTray(): void {
@@ -803,12 +879,20 @@ async function useReadyServer(url: URL): Promise<void> {
       if (probe.bg !== undefined && !isTransparentColor(probe.bg)) {
         try { window.setBackgroundColor(probe.bg) } catch { /* best-effort */ }
       }
+      // Title bar fusion: the injection lands before the splash fade, so the
+      // first frame the user sees is already fused; the initial palette comes
+      // straight from the probed surface.
+      installTitlebarFusion(window, probe.bg)
       // The logo just keeps breathing until the minimum play time is met —
       // nothing on the page reports stages, so there is nothing to update.
       const elapsed = Date.now() - startedAt
       if (elapsed < SPLASH_MIN_MS) {
         await new Promise((resolve) => { setTimeout(resolve, SPLASH_MIN_MS - elapsed) })
       }
+    } else {
+      // Lifecycle test mode skips the readiness wait; the fusion still installs
+      // (it is part of the shipped window contract being smoked).
+      installTitlebarFusion(window)
     }
     // A short finale beat mid-breath before the cross-fade to the GUI.
     await new Promise((resolve) => { setTimeout(resolve, SPLASH_FINALE_MS) })
@@ -868,7 +952,6 @@ async function waitForGuiReady(window: BrowserWindow): Promise<{ bg?: string }> 
   }
   return {}
 }
-
 /**
  * Remove the splash layer and free its webContents, revealing the GUI. Safe
  * to call repeatedly and when the view was never created or already gone.
@@ -907,6 +990,7 @@ if (!app.requestSingleInstanceLock()) {
     // The session poll has no teardown stake in quitting; stopping it first
     // keeps the final menu rebuild from firing mid-teardown.
     stopSessionFeed()
+    stopTitlebarSync()
     // More than one path can request quit. Keep the first tree-kill as the
     // single teardown owner and prevent later before-quit events from exiting
     // Electron while that asynchronous kill is still in flight.

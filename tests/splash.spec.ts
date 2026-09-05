@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SPLASH_BG_DARK, SPLASH_BG_LIGHT, SPLASH_BREATHE_MS, SPLASH_EXIT_MS, splashPageUrl } from '../src/splash.ts'
+import { SPLASH_ACCENT, SPLASH_ACCENT_LIGHT, SPLASH_BG_DARK, SPLASH_BG_LIGHT, SPLASH_BREATHE_MS, SPLASH_EXIT_MS, SPLASH_TYPE_START_S, SPLASH_TYPE_STEP_S, SPLASH_TYPE_TEXT, splashPageUrl } from '../src/splash.ts'
 
 const DATA_URL_PREFIX = 'data:text/html;charset=utf-8,'
 
@@ -15,9 +15,10 @@ describe('splash page', () => {
     expect(splashPageUrl()).toMatch(/^data:text\/html;charset=utf-8,/u)
   })
 
-  it('contains only the breathing logo and nothing else', () => {
+  it('contains only the breathing logo, its type-in progress bar and nothing else', () => {
     const html = splashHtml()
     expect(html).toContain('splash-logo')
+    expect(html).toContain('splash-type')
     // The glow/halo and the wash layers are gone for good — guard against
     // them sneaking back in.
     expect(html).not.toContain('splash-glow')
@@ -25,20 +26,51 @@ describe('splash page', () => {
     expect(html).not.toContain('--glow')
     expect(html).not.toContain('--halo')
     expect(html).not.toContain('--wash')
-    // The whale is the only content image.
+    // The whale is the only content image; no SVG lettering.
     const imgCount = (html.match(/<img/gu) ?? []).length
     expect(imgCount).toBe(1)
-    // No SVG, no text nodes to render, no extra widgets, no motes.
     expect(html).not.toContain('<svg')
-    expect(html).not.toContain('splash-deepseek')
-    expect(html).not.toContain('HARNESS')
-    expect(html).not.toContain('splash-harness')
+    // No extra widgets beyond the type-in bar.
     expect(html).not.toContain('splash-footer')
     expect(html).not.toContain('splash-track')
     expect(html).not.toContain('splash-fill')
     expect(html).not.toContain('shimmer')
     expect(html).not.toContain('class="sp"')
     expect(html).not.toMatch(/@keyframes sp-[abc]/u)
+  })
+
+  it('types the wordmark in as a constant, never-stalling progress bar', () => {
+    const html = splashHtml()
+    // One span per character, staggered by a constant delay: fake progress by
+    // design, but the rhythm never pauses.
+    expect(SPLASH_TYPE_TEXT).toBe('DEEPSEEK HARNESS')
+    const charCount = (html.match(/class="type-ch"/gu) ?? []).length
+    expect(charCount).toBe(SPLASH_TYPE_TEXT.length)
+    // First character at the configured start, constant step afterwards.
+    expect(html).toContain(`style="animation-delay:${SPLASH_TYPE_START_S.toFixed(2)}s"`)
+    const secondDelay = (SPLASH_TYPE_START_S + SPLASH_TYPE_STEP_S).toFixed(2)
+    expect(html).toContain(`animation-delay:${secondDelay}s`)
+    // Once the last character lands, the brand-blue cursor blinks forever —
+    // the load always reads as ongoing, never stalled. Dark and light surfaces
+    // use the site's per-theme brand variants (#4d6bfe / #6799fe).
+    const cursorDelay = (SPLASH_TYPE_START_S + SPLASH_TYPE_TEXT.length * SPLASH_TYPE_STEP_S).toFixed(2)
+    expect(html).toContain(`animation: cursor-blink 1.1s linear ${cursorDelay}s infinite`)
+    expect(html).toContain(`--cursor: ${SPLASH_ACCENT}`)
+    expect(html).toContain(`--cursor: ${SPLASH_ACCENT_LIGHT}`)
+  })
+
+  it('sets the wordmark in Host Grotesk, the Harness site display face', () => {
+    const html = splashHtml()
+    // The font ships embedded (latin subset) so the self-contained page works
+    // offline and inside app.asar; the CSP must therefore allow data: fonts.
+    expect(html).toContain('@font-face')
+    expect(html).toContain('font-family: "Host Grotesk"')
+    expect(html).toContain('font-src data:')
+    expect(html).toContain('data:font/woff2;base64,')
+    // Site display stack, at the site's section-title tier (24px) so the
+    // wordmark locks against the 64px mark like the site header lockup.
+    expect(html).toContain('font-family: "Host Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif')
+    expect(html).toContain('font-size: 24px;')
   })
 
   it('keeps the logo refined (64px)', () => {
@@ -101,19 +133,20 @@ describe('splash page', () => {
     expect(decode(splashPageUrl())).toContain("classList.remove('force-dark', 'force-light')")
   })
 
-  it('keeps the palette to a surface color and the recolored whale', () => {
+  it('keeps the palette to the Harness site surface, text and brand tokens', () => {
     const html = splashHtml()
-    // Light: near-white paper, black glyph.
+    // Light: near-white paper, black glyph, site description ink (rgba(0,0,0,.65)).
     expect(html).toContain(`--bg: ${SPLASH_BG_LIGHT}`)
     expect(html).toContain('--logo-filter: brightness(0)')
-    // Dark: near-black graphite, glyph inverted to white.
+    expect(html).toContain('--type: rgba(0, 0, 0, 0.65)')
+    // Dark: near-black graphite, glyph inverted to white, site description
+    // ink (white at 60%).
     expect(html).toContain(`--bg: ${SPLASH_BG_DARK}`)
     expect(html).toContain('--logo-filter: brightness(0) invert(1)')
-    // No wash/text tokens survive.
+    expect(html).toContain('--type: hsla(0, 0%, 100%, 0.6)')
+    // No halo/wash machinery.
     expect(html).not.toContain('--wash')
-    expect(html).not.toContain('--text:')
-    expect(html).not.toContain('--muted:')
-    expect(html).not.toContain('--accent:')
+    expect(html).not.toContain('--halo')
   })
 
   it('exports the surface colors as a single source of truth for the window pre-paint', () => {
@@ -183,6 +216,9 @@ describe('splash page', () => {
     // Only the idle breathing stops; the exit itself is functional (a fade),
     // so it keeps working instead of snapping instantly.
     expect(html).toContain('.splash-logo { animation: none !important; opacity: 1 !important; }')
+    // The wordmark and cursor render fully static — info stays, motion stops.
+    expect(html).toContain('.type-ch { animation: none !important; opacity: 1 !important; }')
+    expect(html).toContain('.type-cursor { animation: none !important; opacity: 1 !important; }')
     expect(html).toContain('.card { opacity: 1 !important; }')
     expect(html).not.toContain('transition-duration: 0.01s')
   })

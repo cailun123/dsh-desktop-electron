@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractAuthCookie,
+  filterArchived,
   normalizeSessionSummaries,
   parseUnaryResponse,
+  parseWorkspaceBaseline,
   relativeAge,
   SessionFeed,
   SESSION_LIST_ENDPOINT,
   sessionTopicLabel,
   unaryRequestBody,
 } from '../src/sessions.ts'
+import type { WsLike } from '../src/sessions.ts'
 
 /** One well-formed `session/list` item with the full projection shape. */
 function item(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -130,11 +133,39 @@ describe('relativeAge', () => {
   })
 })
 
+describe('parseWorkspaceBaseline', () => {
+  const BASELINE = {
+    type: 'baseline',
+    value: { items: [], archivedSessionIds: ['s-archived-1', 's-archived-2', '', 42] },
+  }
+
+  it('collects the archived session ids', () => {
+    expect(parseWorkspaceBaseline(BASELINE)).toEqual(new Set(['s-archived-1', 's-archived-2']))
+  })
+
+  it('rejects shapes it does not recognize instead of returning a false-empty set', () => {
+    expect(() => parseWorkspaceBaseline(undefined)).toThrow()
+    expect(() => parseWorkspaceBaseline({ type: 'baseline' })).toThrow('malformed')
+    expect(() => parseWorkspaceBaseline({ type: 'baseline', value: null })).toThrow('malformed')
+    expect(() => parseWorkspaceBaseline({ type: 'baseline', value: { items: [] } })).toThrow('archivedSessionIds')
+  })
+})
+
+describe('filterArchived', () => {
+  it('drops archived sessions and is a no-op for an empty set', () => {
+    const summaries = normalizeSessionSummaries({ items: [item({ sessionId: 'a' }), item({ sessionId: 'b' })] })
+    expect(filterArchived(summaries, new Set(['a'])).map((session) => session.sessionId)).toEqual(['b'])
+    expect(filterArchived(summaries, new Set())).toHaveLength(2)
+  })
+})
+
 describe('SessionFeed', () => {
   const SERVER = 'http://127.0.0.1:39481/?token=secret'
   const COOKIE_PAIR = 'dsh-auth-k=v1.sig'
 
-  /** A fetch double scripted per call: URL match → canned response factory. */
+  /**
+   * A fetch double scripted per call: URL match → canned response factory.
+   */
   function scriptFetch(routes: Array<{ match: RegExp; respond: (url: string, init: RequestInit) => Response }>): { calls: Array<{ url: string; init: RequestInit }>; fetch: (url: string, init: RequestInit) => Promise<Response> } {
     const calls: Array<{ url: string; init: RequestInit }> = []
     return {
@@ -148,12 +179,48 @@ describe('SessionFeed', () => {
     }
   }
 
-  function listResponse(): Response {
+  /**
+   * A socket double: emits `open`, then answers the `workspace/follow` open
+   * frame with the scripted behavior (a baseline value, or an error/close).
+   */
+  function scriptSockets(script: { baseline?: unknown; failWith?: 'error' | 'close' }): { sockets: Array<{ url: string; headers: Record<string, string> }>; factory: (url: string, options: { headers: Record<string, string> }) => WsLike } {
+    const sockets: Array<{ url: string; headers: Record<string, string> }> = []
+    return {
+      sockets,
+      factory: (url, options) => {
+        sockets.push({ url, headers: options.headers })
+        const handlers = new Map<string, (data?: unknown) => void>()
+        const socket: WsLike = {
+          send: (data) => {
+            const frame = JSON.parse(data) as { type: string; streamId: string }
+            if (frame.type === 'open') {
+              if (script.baseline !== undefined) {
+                handlers.get('message')?.(JSON.stringify({ type: 'item', streamId: frame.streamId, value: script.baseline }))
+              } else if (script.failWith === 'error') {
+                handlers.get('message')?.(JSON.stringify({ type: 'error', streamId: frame.streamId, error: { code: 'boom', message: '', details: {} } }))
+              }
+            }
+          },
+          close: () => { handlers.get('close')?.() },
+          on: (event, handler) => { handlers.set(event, handler) },
+        }
+        queueMicrotask(() => {
+          handlers.get('open')?.()
+          if (script.failWith === 'close') handlers.get('close')?.()
+        })
+        return socket
+      },
+    }
+  }
+
+  const GOOD_BASELINE = { type: 'baseline', value: { items: [], archivedSessionIds: ['s-9'] } }
+
+  function listResponse(sessionIds: string[]): Response {
     return new Response(
       JSON.stringify({
         type: 'server-response',
         rpcId: 'ignored',
-        result: { ok: true, value: { items: [item({ sessionId: 's-9' })] } },
+        result: { ok: true, value: { items: sessionIds.map((sessionId) => item({ sessionId })) } },
       }),
       { status: 200 },
     )
@@ -162,9 +229,10 @@ describe('SessionFeed', () => {
   it('exchanges the token for the auth cookie and lists sessions', async () => {
     const scripted = scriptFetch([
       { match: /\/\?token=secret$/, respond: () => new Response(null, { status: 303, headers: { 'set-cookie': `${COOKIE_PAIR}; Path=/; HttpOnly` } }) },
-      { match: /\/api\/session\/list$/, respond: () => listResponse() },
+      { match: /\/api\/session\/list$/, respond: () => listResponse(['s-9']) },
     ])
-    const feed = new SessionFeed(new URL(SERVER), scripted.fetch)
+    const sockets = scriptSockets({ failWith: 'error' })
+    const feed = new SessionFeed(new URL(SERVER), scripted.fetch, sockets.factory)
     const sessions = await feed.list()
     expect(sessions.map((session) => session.sessionId)).toEqual(['s-9'])
     expect(scripted.calls[0]?.url).toBe('http://127.0.0.1:39481/?token=secret')
@@ -184,14 +252,47 @@ describe('SessionFeed', () => {
         respond: () => {
           rpcCalls += 1
           if (rpcCalls === 1) return new Response('unauthorized', { status: 401 })
-          return listResponse()
+          return listResponse(['s-9'])
         },
       },
     ])
-    const feed = new SessionFeed(new URL(SERVER), scripted.fetch)
+    const sockets = scriptSockets({ failWith: 'error' })
+    const feed = new SessionFeed(new URL(SERVER), scripted.fetch, sockets.factory)
     const sessions = await feed.list()
     expect(sessions).toHaveLength(1)
     expect(rpcCalls).toBe(2)
+  })
+
+  it('drops the sessions the workspace baseline reports as archived', async () => {
+    const scripted = scriptFetch([
+      { match: /\/\?token=secret$/, respond: () => new Response(null, { status: 303, headers: { 'set-cookie': `${COOKIE_PAIR}; Path=/` } }) },
+      { match: /\/api\/session\/list$/, respond: () => listResponse(['s-9', 's-10']) },
+    ])
+    const sockets = scriptSockets({ baseline: GOOD_BASELINE })
+    const feed = new SessionFeed(new URL(SERVER), scripted.fetch, sockets.factory)
+    const sessions = await feed.list()
+    expect(sessions.map((session) => session.sessionId)).toEqual(['s-10'])
+    // The baseline hop reuses the authenticated cookie and the mux route.
+    expect(sockets.sockets[0]?.url).toBe('ws://127.0.0.1:39481/api/remote.mux')
+    expect(sockets.sockets[0]?.headers.cookie).toBe(COOKIE_PAIR)
+  })
+
+  it('keeps the previous archive set when a baseline fetch fails', async () => {
+    const scripted = scriptFetch([
+      { match: /\/\?token=secret$/, respond: () => new Response(null, { status: 303, headers: { 'set-cookie': `${COOKIE_PAIR}; Path=/` } }) },
+      { match: /\/api\/session\/list$/, respond: () => listResponse(['s-9']) },
+    ])
+    let fail = false
+    const sockets = scriptSockets({ baseline: GOOD_BASELINE })
+    const feed = new SessionFeed(new URL(SERVER), scripted.fetch, (url, options) => {
+      if (fail) return scriptSockets({ failWith: 'close' }).factory(url, options)
+      return sockets.factory(url, options)
+    })
+    expect((await feed.list()).map((session) => session.sessionId)).toEqual([])
+    fail = true
+    // The WebSocket died, but s-9 stays archived: a transport blip must not
+    // resurrect topics the user archived.
+    expect((await feed.list()).map((session) => session.sessionId)).toEqual([])
   })
 
   it('calls the API bare for an unauthenticated server and surfaces RPC failures', async () => {
@@ -204,7 +305,8 @@ describe('SessionFeed', () => {
         ),
       },
     ])
-    const feed = new SessionFeed(new URL('http://127.0.0.1:39481/'), scripted.fetch)
+    const sockets = scriptSockets({ failWith: 'error' })
+    const feed = new SessionFeed(new URL('http://127.0.0.1:39481/'), scripted.fetch, sockets.factory)
     await expect(feed.list()).rejects.toThrow('boom')
     // No token → no auth hop.
     expect(scripted.calls).toHaveLength(1)

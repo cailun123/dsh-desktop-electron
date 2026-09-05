@@ -71,6 +71,10 @@ app.whenReady().then(async () => {
   await snap('00-breath-low')
   await sleep(1350)
   await snap('01-breath-high')
+  // Type-in done (0.9s + 16 × 0.18s = 3.78s): the full wordmark is visible
+  // and the accent cursor has started blinking — the never-stalling tail.
+  await sleep(1800)
+  await snap('02-type-done')
   // Mirror main.ts: make the view transparent, then exitSplash() (which
   // fires __exit and resolves after SPLASH_EXIT_MS).
   view.setBackgroundColor('#00000000')
