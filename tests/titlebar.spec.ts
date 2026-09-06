@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   CAPTION_LEADING_CLEARANCE_MACOS_PX,
   CAPTION_TRAILING_CLEARANCE_PX,
-  TITLEBAR_SURFACE_PROBE,
+  TITLEBAR_STATE_PROBE,
   TITLEBAR_STRIP_FALLBACK_PX,
   captionClearanceForPlatform,
+  compositedSurfaceColor,
   initialOverlayPalette,
   overlayPaletteForSurface,
   titlebarFusionCss,
@@ -118,7 +119,39 @@ describe('fusion CSS', () => {
 })
 
 describe('surface probe', () => {
-  it('reads the theme-color meta the GUI theme presenter maintains', () => {
-    expect(TITLEBAR_SURFACE_PROBE).toContain('meta[name="theme-color"]')
+  it('reads the theme-color meta and hunts for a full-viewport scrim', () => {
+    expect(TITLEBAR_STATE_PROBE).toContain('meta[name="theme-color"]')
+    // Scrim candidates by class stem, case-insensitive so `_onboardingMask`
+    // style stems match too.
+    expect(TITLEBAR_STATE_PROBE).toContain('[class*="mask" i]')
+    expect(TITLEBAR_STATE_PROBE).toContain('[class*="overlay" i]')
+    // Only translucent full-viewport layers count as a dim mask.
+    expect(TITLEBAR_STATE_PROBE).toContain('alpha > 0 && alpha < 1')
+    expect(TITLEBAR_STATE_PROBE).toContain('rect.right < vw - 1')
+  })
+})
+
+describe('scrim compositing', () => {
+  it('dims the surface by the modal mask while it is open', () => {
+    // dsh's light mask is #0000003d → white becomes the dimmed grey the eye
+    // sees on the masked page.
+    expect(compositedSurfaceColor('rgb(255, 255, 255)', 'rgba(0, 0, 0, 0.239)')).toBe('rgb(194, 194, 194)')
+    // dsh's dark mask is #00000080 → near-black sinks further.
+    expect(compositedSurfaceColor('#0d0d0f', 'rgba(0, 0, 0, 0.5)')).toBe('rgb(7, 7, 8)')
+  })
+
+  it('composites non-black scrims too', () => {
+    expect(compositedSurfaceColor('rgb(255, 255, 255)', 'rgba(77, 107, 254, 0.5)')).toBe('rgb(166, 181, 255)')
+  })
+
+  it('rejects unparsable or fully transparent inputs', () => {
+    expect(compositedSurfaceColor('not-a-color', 'rgba(0, 0, 0, 0.5)')).toBeUndefined()
+    expect(compositedSurfaceColor('rgb(255, 255, 255)', 'transparent')).toBeUndefined()
+    expect(compositedSurfaceColor('rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0.5)')).toBeUndefined()
+  })
+
+  it('still feeds the overlay palette split after compositing', () => {
+    const dimmed = compositedSurfaceColor('rgb(255, 255, 255)', 'rgba(0, 0, 0, 0.239)')
+    expect(dimmed !== undefined && overlayPaletteForSurface(dimmed)?.symbolColor).toBe('#000000')
   })
 })

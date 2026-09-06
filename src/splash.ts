@@ -10,12 +10,11 @@
  * The visual is the official DeepSeek Harness identity over a flat
  * monochrome surface: the centered whale enters with the official Harness
  * hero animation (`ds-hero-enter`: rise + de-blur, deepseek.com/harness) and
- * then rides a gentle scale/opacity swell; beneath it the official wordmark
- * lockup ("deepseek" + the HARNESS chip, vector paths lifted from the app
- * header) and the official GUI "ongoing" dot-matrix chase loader, which runs
- * for however long the boot takes — the load always reads as ongoing.
- * No progress bar widgets, no spinner — the breath and the official loader
- * are the design.
+ * then breathes (a gentle scale/opacity swell on a 2.8s cycle); beneath it
+ * the official wordmark lockup ("deepseek" + the HARNESS chip, vector paths
+ * lifted from the app header) holds the identity while the boot runs — the
+ * load always reads as ongoing. No progress bar widgets, no spinner — the
+ * breath and the official wordmark are the design.
  *
  * All animation is `transform` and `opacity` only (compositor-thread work),
  * so the loop stays cheap under background throttling. The page is a
@@ -42,40 +41,32 @@
 import type { WebContents } from './electron-api.ts'
 
 /**
- * Exit fade duration in ms. The window opens the exit transition with
- * `__exit()` — which keeps the breath playing untouched and fades the whole
- * splash layer out on a gentle sine ease — and waits this long before
- * removing the splash view, so the main process's timer and the page's
- * transition stay in lockstep and the GUI appears to fade in. The breathing
- * logo is never frozen mid-pose: the fade itself is the last breath.
+ * Exit hand-off duration in ms. The window opens the exit sequence with
+ * `__exit()` and waits this long before removing the splash view, so the
+ * main process's timer and the page stay in lockstep. The page runs the
+ * official hand-off inside that budget: the wordmark exits with a
+ * reverse rise + blur (320ms), the GUI hero title 探索未至之境 enters with
+ * ds-hero-enter (0.7s), and after a short beat the whole layer fades out on
+ * a gentle sine ease (700ms) — the GUI appears to fade in. Nothing is frozen
+ * mid-pose: the fade itself is the last beat of the sequence.
  */
-export const SPLASH_EXIT_MS = 700
+export const SPLASH_EXIT_MS = 2100
 
 /** Breathing pulse period (ms) for the logo. */
 export const SPLASH_BREATHE_MS = 2800
 
 /**
- * Loading indicator: the official GUI 'ongoing' dot-matrix chase loader
- * (copied from the dsh-web-frontend state indicator) running under the
- * wordmark for however long the boot takes.
- */
-export const SPLASH_ACCENT = '#4d6bfe'
-
-/** Brand blue on light surfaces (the site's light-theme brand variant). */
-export const SPLASH_ACCENT_LIGHT = '#6799fe'
-
-/**
  * Minimum time the splash plays before the hand-off to the GUI, so the intro
  * is always seen in full even when the server and the GUI frontend become
- * ready faster. When the GUI is slower, the breathing loop simply keeps
- * playing until it is actually ready. Lives here rather than in `main.ts` so
+ * ready faster. When the GUI is slower, the breathing simply keeps going
+ * until it is actually ready. Lives here rather than in `main.ts` so
  * the app, the offline preview and the tests share one timeline.
  */
 export const SPLASH_MIN_MS = 3800
 
 /**
- * Brief beat before the exit transition starts, so the breathing logo is seen
- * for a moment more right as the hand-off begins.
+ * Brief beat before the exit transition starts, so the lockup is seen a
+ * moment more right as the hand-off begins.
  */
 export const SPLASH_FINALE_MS = 400
 
@@ -157,7 +148,7 @@ export function updateSplashTheme(theme: 'dark' | 'light' | 'system'): void {
 }
 
 /**
- * Fade the splash page out (the page freezes its breath pose and fades the
+ * Fade the splash page out (the page freezes the card pose and fades the
  * whole layer via an inline-style transition), then resolve so the caller can
  * remove the splash view and reveal the GUI that has been loading behind it.
  * Resolves immediately when nothing is attached.
@@ -183,9 +174,8 @@ export function splashPageUrl(initialTheme?: 'dark' | 'light'): string {
 }
 
 /**
- * Build the splash page: a flat monochrome surface with the whale logo
- * breathing at its center with the type-in wordmark beneath it, and nothing
- * else. When `initialTheme` is given the
+ * Build the splash page: a flat monochrome surface with the breathing whale
+ * logo at its center, the official wordmark beneath it — and nothing else. When `initialTheme` is given the
  * matching `force-*` class is baked onto `<html>` so the palette is correct
  * before first paint; `window.__setTheme` switches it live afterwards.
  *
@@ -197,19 +187,11 @@ export function splashPageUrl(initialTheme?: 'dark' | 'light'): string {
 function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   const themeClass = initialTheme === 'dark' ? ' class="force-dark"' : initialTheme === 'light' ? ' class="force-light"' : ''
   // Official wordmark: whale excluded (the breathing PNG plays above), the
-  // "deepseek" letters and the HARNESS badge render whole — the loading state
-  // is carried by the official dot-matrix chase loader below, not by typing.
+  // "deepseek" letters and the HARNESS badge render whole.
   const letterPaths = WORDMARK_SLOTS.map((paths) => paths.map((d) => `<path d="${d}"/>`).join('')).join('')
   // HARNESS badge: the official inverted chip — ink capsule, page-color text.
   const badge = `<rect x="${WORDMARK_BADGE.rect.x}" y="${WORDMARK_BADGE.rect.y}" width="${WORDMARK_BADGE.rect.width}" height="${WORDMARK_BADGE.rect.height}" rx="${WORDMARK_BADGE.rect.rx}"/>`
     + `<g class="type-badge-text">${WORDMARK_BADGE.letters.map((d) => `<path d="${d}"/>`).join('')}</g>`
-  // Official GUI loader ("ongoing" state): 8 cells chasing around a 10×10
-  // ring, each delayed (c - 8) × 125ms so the wave starts mid-cycle — copied
-  // from the dsh-web-frontend state indicator, no JS timers involved.
-  const LOADER_CELLS = [[0, 0], [4, 0], [8, 0], [8, 4], [8, 8], [4, 8], [0, 8], [0, 4]]
-  const loaderCells = LOADER_CELLS.map(([x, y], c) =>
-    `<rect class="loader-cell" x="${x}" y="${y}" width="2" height="2" style="animation-delay:${(c - LOADER_CELLS.length) * 125}ms"/>`
-  ).join('')
   const html = `<!DOCTYPE html>
 <html lang="zh-CN"${themeClass}>
 <head>
@@ -223,14 +205,14 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
     --bg: ${SPLASH_BG_LIGHT};
     --logo-filter: brightness(0);
     --type: rgba(0, 0, 0, 0.65);
-    --accent: ${SPLASH_ACCENT_LIGHT};
+    --title: rgb(15, 17, 21);
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: ${SPLASH_BG_DARK};
       --logo-filter: brightness(0) invert(1);
       --type: hsla(0, 0%, 100%, 0.6);
-      --accent: ${SPLASH_ACCENT};
+      --title: hsla(0, 0%, 100%, 0.92);
     }
   }
 
@@ -241,14 +223,14 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
     --bg: ${SPLASH_BG_DARK};
     --logo-filter: brightness(0) invert(1);
     --type: hsla(0, 0%, 100%, 0.6);
-      --accent: ${SPLASH_ACCENT};
+      --title: hsla(0, 0%, 100%, 0.92);
   }
   html.force-light {
     color-scheme: light;
     --bg: ${SPLASH_BG_LIGHT};
     --logo-filter: brightness(0);
     --type: rgba(0, 0, 0, 0.65);
-    --accent: ${SPLASH_ACCENT_LIGHT};
+    --title: rgb(15, 17, 21);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -270,9 +252,8 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   }
   @keyframes enter { to { opacity: 1; } }
 
-  /* 正中：鲸鱼 logo + 打字进度条，2.8s 一息的呼吸。呼吸只动
-     transform/opacity，留在合成器线程；正弦型缓动 + 关键帧零速起收，
-     循环无速度突变。 */
+  /* 正中：鲸鱼 logo + 官方字标。入场只动 transform/opacity/filter，留在
+     合成器线程；落定后鲸鱼固定显示。 */
   .splash {
     position: absolute; inset: 0;
     display: flex; flex-direction: column;
@@ -282,7 +263,7 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   }
   .splash-logo {
     position: relative;
-    width: 80px; height: 80px;
+    width: 76px; height: 76px;
     filter: var(--logo-filter);
     transform: translateZ(0);
     will-change: transform, opacity;
@@ -310,23 +291,29 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
       filter: var(--enter-filter, opacity(1)) blur(var(--enter-blur, 0px));
     }
     to {
-      opacity: var(--enter-to, 1);
+      opacity: 1;
       transform: translateY(0) translateZ(0);
       filter: var(--enter-filter, opacity(1)) blur(0);
     }
   }
 
-  /* 呼吸：logo 2.8s 内 scale 1→1.05、opacity 0.7→1，幅度克制、贴近
-     Codex 启动的呼吸质感；正弦型缓动 + 关键帧零速起收，循环无速度突
-     变。每帧都带 translateZ，呼吸稳定留在合成器线程，不掉帧。 */
+  /* 呼吸：logo 2.8s 内 scale 1→1.05、opacity 0.7→1，幅度克制；正弦型缓动
+     + 关键帧零速起收，循环无速度突变。每帧都带 translateZ，呼吸稳定留在
+     合成器线程。入场终点（0.9s）即呼吸 0% 状态，交接无跳变。 */
   @keyframes logo-breathe {
     0%, 100% { transform: translateZ(0) scale(1);    opacity: 0.7; }
     50%      { transform: translateZ(0) scale(1.05); opacity: 1; }
   }
 
   /* 官方字标：应用头部 lockup 的 "deepseek HARNESS" 矢量路径整体呈现。 */
+  /* 字标 + 加载器容器：交接标题覆盖在其上方（字标槽位）。 */
+  .splash-lockup {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 12px;
+  }
   .splash-type {
-    height: 38px;
+    height: 42px;
     fill: var(--type);
     /* 官网 ds-hero-enter 次块参数：上浮 16px、0.7s、延迟 0.15s。 */
     --enter-y: 16px;
@@ -335,36 +322,36 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   /* HARNESS 徽章：官方反白胶囊——墨色胶囊 + 页面底色文字。 */
   .type-badge-text { fill: var(--bg); }
 
-  /* 官方加载指示器（GUI 会话状态 "ongoing" 动画原样移植）：8 个方点围成
-     环，透明度按 1 → 0.6 → 0.35 → 0.15 的波浪追逐循环 1s，颜色为官方
-     ongoing 蓝。整场运行，直到整层淡出——加载感持续不中断。 */
-  .splash-loader {
-    width: 20px; height: 20px;
-    fill: var(--accent);
-    /* 官网 ds-hero-enter 次块参数：随字标之后浮现（延迟 0.3s）。 */
-    --enter-y: 12px;
-    animation: ds-hero-enter 0.7s ease-out 0.3s backwards;
+  /* 交接标题：加载完成时字标退场后，官方 Hero 的“探索未至之境”
+     以 ds-hero-enter 入场（GUI 空态标题同款文案），中文字重用系统黑体栈。
+     绝对定位覆盖在字标槽位上——标题与鲸鱼的间距和字标完全一致，交接时
+     不产生额外空白。 */
+  .splash-title {
+    position: absolute; left: 0; right: 0; top: 4px;
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    opacity: 0;
   }
-  .loader-cell {
-    opacity: 0.15;
-    animation: dot-chase 1s infinite;
+  .splash-title.is-in {
+    --enter-y: 18px;
+    --enter-blur: 8px;
+    animation: ds-hero-enter 0.7s ease-out both;
   }
-  @keyframes dot-chase {
-    0%, 12.4% { opacity: 1; }
-    12.5%, 24.9% { opacity: 0.6; }
-    25%, 37.4% { opacity: 0.35; }
-    37.5%, to { opacity: 0.15; }
+  .title-text {
+    /* 官方渲染参数：从运行中的 GUI 空态标题逐项读取（26px / 500 / 系统栈，
+       字距 normal）。 */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 26px;
+    font-weight: 500;
+    letter-spacing: normal;
+    color: var(--title);
   }
-
-  /* 尊重系统“减弱动态效果”：只停呼吸动画；退出淡出是功能性过渡，
+  /* 尊重系统“减弱动态效果”：只停呼吸与入场动画；退出淡出是功能性过渡，
      保持可用，避免系统开启该选项时退出变成瞬间切换。 */
   @media (prefers-reduced-motion: reduce) {
     .splash-logo { animation: none !important; opacity: 1 !important; }
     /* 静态展示完整字标与加载点阵：信息仍在，动态全部停止（官方入场动画
        一并停用）。 */
     .splash-type { animation: none !important; }
-    .splash-loader { animation: none !important; }
-    .loader-cell { animation: none !important; opacity: 0.6 !important; }
     .card { opacity: 1 !important; }
   }
 </style>
@@ -373,8 +360,10 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   <div class="card">
     <div class="splash">
       <img class="splash-logo" src="${WHALE_PNG_DATA_URL}" alt="DeepSeek" draggable="false">
-      <svg class="splash-type" viewBox="${WORDMARK_VIEW_BOX}" aria-hidden="true" focusable="false">${letterPaths}${badge}</svg>
-      <svg class="splash-loader" viewBox="0 0 10 10" shape-rendering="crispEdges" aria-hidden="true" focusable="false">${loaderCells}</svg>
+      <div class="splash-lockup">
+        <svg class="splash-type" viewBox="${WORDMARK_VIEW_BOX}" aria-hidden="true" focusable="false">${letterPaths}${badge}</svg>
+        <div class="splash-title" aria-hidden="true"><span class="title-text">探索未至之境</span></div>
+      </div>
     </div>
   </div>
   <script>
@@ -386,23 +375,47 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
         if (theme === 'dark') htmlEl.classList.add('force-dark');
         else if (theme === 'light') htmlEl.classList.add('force-light');
       };
-      // 退出“呼吸不停，整层淡出，淡入主界面”：
-      // 1) 只摘掉底色层的 enter 动画（forwards 填充会压住后续的内联过渡，
-      //    必须先转成内联样式）——logo 与辉光的呼吸不冻结、不打断；
-      // 2) 底色层 ${SPLASH_EXIT_MS}ms 正弦缓动淡出，仍在呼吸的 logo 随层
-      //    一起消失，主界面从后面透出，淡出本身就是最后一口呼吸；
-      // 3) ${SPLASH_EXIT_MS}ms 全部结束，与主进程的 SPLASH_EXIT_MS 对齐。
+      // 退出交接“字标退场 → 探索未至之境入场 → 整层淡出，淡入主界面”：
+      // 0) 摘掉底色层的 enter 动画（forwards 填充会压住后续的内联过渡，
+      //    必须先转成内联样式）——logo、字标、加载器本体不冻结；
+      // 1) 官方反向退场：字标与加载器上浮 + 模糊淡出（320ms ease-in）；
+      // 2) 官方 ds-hero-enter 入场：“探索未至之境”上浮 + 去模糊
+      //    （0.7s，GUI 空态标题同款文案）；reduced-motion 下直接静态显示；
+      // 3) 短暂停顿后底色层 700ms 正弦淡出，固定 logo 随层一起消失，
+      //    主界面从后面透出；
+      // 4) 320 + 700 + 380 停顿 + 700 淡出 = ${SPLASH_EXIT_MS}ms，与主进程
+      //    的 SPLASH_EXIT_MS 对齐。
       window.__exit = function () {
         var card = document.querySelector('.card');
+        var lockup = document.querySelector('.splash-type');
+        var title = document.querySelector('.splash-title');
+        var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         if (card !== null) {
           card.style.opacity = getComputedStyle(card).opacity;
           card.style.animation = 'none';
         }
-        if (card !== null) {
-          card.style.transition = 'opacity ${SPLASH_EXIT_MS}ms cubic-bezier(0.45, 0, 0.55, 1)';
-          void card.offsetWidth;
-          card.style.opacity = '0';
+        var out = [lockup];
+        for (var i = 0; i < out.length; i++) {
+          var el = out[i];
+          if (el === null) continue;
+          el.style.transition = 'opacity 320ms ease-in, transform 320ms ease-in, filter 320ms ease-in';
+          void el.offsetWidth;
+          el.style.opacity = '0';
+          el.style.transform = 'translateY(-10px)';
+          el.style.filter = 'blur(4px)';
         }
+        setTimeout(function () {
+          if (title === null) return;
+          if (reduced) { title.style.opacity = '1'; }
+          else { title.classList.add('is-in'); }
+        }, 320);
+        setTimeout(function () {
+          if (card !== null) {
+            card.style.transition = 'opacity 700ms cubic-bezier(0.45, 0, 0.55, 1)';
+            void card.offsetWidth;
+            card.style.opacity = '0';
+          }
+        }, 1400);
         document.body.classList.add('exit');
       };
     })();

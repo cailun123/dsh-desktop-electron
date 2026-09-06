@@ -182,45 +182,120 @@ export function titlebarFusionCss(platform: NodeJS.Platform): string {
 }
 
 /**
- * Injected probe: the GUI's theme presenter keeps `<meta name="theme-color">`
- * equal to the computed body background, so re-reading it is a cheap
- * theme-change signal for the overlay — no preload, no IPC, no DOM mutation
- * observer wired across the sandbox.
+ * Injected probe: what the overlay controls should blend with right now.
+ *
+ * - `surface` — the GUI's theme presenter keeps `<meta name="theme-color">`
+ *   equal to the computed body background, so re-reading it is a cheap
+ *   theme-change signal (no preload, no IPC, no DOM mutation observer wired
+ *   across the sandbox).
+ * - `scrim` — the background color of the topmost full-viewport translucent
+ *   layer (a modal's dim mask), when one is open. The OS draws the caption
+ *   buttons *above* every page layer, so a modal's mask cannot dim them;
+ *   the main process composites this scrim over the surface and re-skins the
+ *   controls to match, which keeps the buttons from glaring against a dimmed
+ *   page. Candidates are matched by class stem (`mask`/`overlay`/`scrim`/
+ *   `backdrop`, case-insensitive) and must actually cover the viewport and
+ *   carry a translucent background — the app frame itself is opaque and
+ *   never matches.
  */
-export const TITLEBAR_SURFACE_PROBE = `(() => {
+export const TITLEBAR_STATE_PROBE = `(() => {
   const meta = document.querySelector('meta[name="theme-color"]');
-  return meta === null ? undefined : meta.getAttribute('content');
+  const surface = meta === null ? undefined : meta.getAttribute('content');
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const alphaOf = (bg) => {
+    const m = /rgba?\\(([^)]+)\\)/.exec(bg);
+    if (m === null) return 1;
+    const parts = m[1].split(/[\\s,/]+/).filter(Boolean);
+    if (parts.length < 4) return 1;
+    const alpha = parts[3].endsWith('%') ? Number.parseFloat(parts[3]) / 100 : Number.parseFloat(parts[3]);
+    return Number.isFinite(alpha) ? alpha : 1;
+  };
+  let scrim;
+  let scrimZ = -Infinity;
+  const candidates = document.querySelectorAll('[class*="mask" i],[class*="overlay" i],[class*="scrim" i],[class*="backdrop" i]');
+  for (const el of candidates) {
+    const cs = getComputedStyle(el);
+    if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.left > 1 || rect.top > 1 || rect.right < vw - 1 || rect.bottom < vh - 1) continue;
+    const alpha = alphaOf(cs.backgroundColor);
+    if (!(alpha > 0 && alpha < 1)) continue;
+    const z = Number.parseFloat(cs.zIndex) || 0;
+    if (z < scrimZ) continue;
+    scrimZ = z;
+    scrim = cs.backgroundColor;
+  }
+  return { surface, scrim };
 })()`
 
+/** An 8-bit sRGB channel triplet with alpha in 0..1. */
+interface Rgba {
+  r: number
+  g: number
+  b: number
+  a: number
+}
+
 /**
- * Parse a CSS color into opaque 8-bit sRGB channels. Handles the forms
- * computed styles and the theme-color meta produce (`rgb()`, `rgba()`, hex)
- * and the occasional space-separated modern syntax. Alpha is dropped: an
- * opaque overlay backdrop is the point.
- * @param value - the raw color string.
- * @returns `[r, g, b]`, or undefined for transparent/unparsable values.
+ * Alpha-composite one color over another and return the opaque result. This
+ * is what the caption buttons' backdrop should read while a modal dim mask is
+ * open: the GUI's surface color seen through the mask — the same value the
+ * user's eye assigns to the dimmed page around the controls.
+ * @param surface - the opaque base (the GUI body background).
+ * @param scrim - the translucent layer on top of it (the mask background).
+ * @returns an opaque `rgb()` string, or undefined when either value is
+ *   transparent or unparsable (then the previous palette simply stays).
  */
-function parseOpaqueRgb(value: string): [number, number, number] | undefined {
+export function compositedSurfaceColor(surface: string, scrim: string): string | undefined {
+  const base = parseColor(surface)
+  const top = parseColor(scrim)
+  if (base === undefined || top === undefined || base.a === 0) return undefined
+  const mix = (channel: 'r' | 'g' | 'b'): number =>
+    Math.round(top.a * top[channel] + (1 - top.a) * base[channel])
+  return `rgb(${mix('r')}, ${mix('g')}, ${mix('b')})`
+}
+
+/**
+ * Parse a CSS color into 8-bit sRGB channels with alpha. Handles the forms
+ * computed styles and the theme-color meta produce (`rgb()`, `rgba()`, hex)
+ * and the occasional space-separated modern syntax.
+ * @param value - the raw color string.
+ * @returns the channels, or undefined for transparent/unparsable values.
+ */
+function parseColor(value: string): Rgba | undefined {
   const text = value.trim().toLowerCase()
   if (text === '' || text === 'transparent' || text === 'none') return undefined
   const hex = /^#([0-9a-f]{3,8})$/u.exec(text)
   if (hex !== null) {
     const digits = hex[1] ?? ''
     if (digits.length === 4 || digits.length === 8) {
-      // Alpha-leading variants: a fully transparent hex is no color at all.
       const alphaDigits = digits.length === 4 ? digits.slice(3) : digits.slice(6)
-      if (Number.parseInt(alphaDigits, 16) === 0) return undefined
-    }
-    if (digits.length === 3 || digits.length === 4) {
+      const alpha = Number.parseInt(alphaDigits, 16) / 255
+      if (alpha === 0) return undefined
       const expand = (d: string): number => Number.parseInt(d + d, 16)
-      return [expand(digits[0] ?? '0'), expand(digits[1] ?? '0'), expand(digits[2] ?? '0')]
+      if (digits.length === 4) {
+        return { r: expand(digits[0] ?? '0'), g: expand(digits[1] ?? '0'), b: expand(digits[2] ?? '0'), a: alpha }
+      }
+      return {
+        r: Number.parseInt(digits.slice(0, 2), 16),
+        g: Number.parseInt(digits.slice(2, 4), 16),
+        b: Number.parseInt(digits.slice(4, 6), 16),
+        a: alpha,
+      }
     }
-    if (digits.length === 6 || digits.length === 8) {
-      return [
-        Number.parseInt(digits.slice(0, 2), 16),
-        Number.parseInt(digits.slice(2, 4), 16),
-        Number.parseInt(digits.slice(4, 6), 16),
-      ]
+    if (digits.length === 3) {
+      const expand = (d: string): number => Number.parseInt(d + d, 16)
+      return { r: expand(digits[0] ?? '0'), g: expand(digits[1] ?? '0'), b: expand(digits[2] ?? '0'), a: 1 }
+    }
+    if (digits.length === 6) {
+      return {
+        r: Number.parseInt(digits.slice(0, 2), 16),
+        g: Number.parseInt(digits.slice(2, 4), 16),
+        b: Number.parseInt(digits.slice(4, 6), 16),
+        a: 1,
+      }
     }
     return undefined
   }
@@ -229,22 +304,39 @@ function parseOpaqueRgb(value: string): [number, number, number] | undefined {
   // Comma form: 255, 255, 255[, a]; modern form: 255 255 255 [/ a].
   const body = fn[1] ?? ''
   const parts = body.includes('/') ? body.split('/') : [body]
+  let alpha = 1
   if (parts.length === 2) {
-    const alpha = Number.parseFloat((parts[1] ?? '').trim())
-    if (Number.isFinite(alpha) && alpha === 0) return undefined
+    alpha = Number.parseFloat((parts[1] ?? '').trim())
+  } else {
+    const channels = (parts[0] ?? '').split(/[\s,]+/).filter((part) => part !== '')
+    if (channels.length === 4) alpha = Number.parseFloat(channels[3] ?? '')
   }
-  const channels = (parts[0] ?? '').split(/[\s,]+/).filter((part) => part !== '')
-  if (channels.length === 4) {
-    const alpha = Number.parseFloat(channels[3] ?? '')
-    if (Number.isFinite(alpha) && alpha === 0) return undefined
-  }
-  const rgb = channels.slice(0, 3).map((channel) => {
+  if (!Number.isFinite(alpha) || alpha === 0) return undefined
+  const channels = (parts[0] ?? '').split(/[\s,]+/).filter((part) => part !== '').slice(0, 3)
+  const rgb = channels.map((channel) => {
     if (channel.endsWith('%')) {
       const percent = Number.parseFloat(channel.slice(0, -1))
       return Number.isFinite(percent) ? Math.round(percent * 2.55) : NaN
     }
     return Number.parseFloat(channel)
   })
-  if (rgb.some((channel) => !Number.isFinite(channel))) return undefined
-  return rgb.map((channel) => Math.min(255, Math.max(0, Math.round(channel)))) as [number, number, number]
+  if (rgb.length !== 3 || rgb.some((channel) => !Number.isFinite(channel))) return undefined
+  return {
+    r: Math.min(255, Math.max(0, Math.round(rgb[0] ?? 0))),
+    g: Math.min(255, Math.max(0, Math.round(rgb[1] ?? 0))),
+    b: Math.min(255, Math.max(0, Math.round(rgb[2] ?? 0))),
+    a: Math.min(1, Math.max(0, alpha)),
+  }
+}
+
+/**
+ * Parse a CSS color into opaque 8-bit sRGB channels: an opaque overlay
+ * backdrop is the point, so alpha is dropped (fully transparent values are
+ * "no color").
+ * @param value - the raw color string.
+ * @returns `[r, g, b]`, or undefined for transparent/unparsable values.
+ */
+function parseOpaqueRgb(value: string): [number, number, number] | undefined {
+  const color = parseColor(value)
+  return color === undefined ? undefined : [color.r, color.g, color.b]
 }
