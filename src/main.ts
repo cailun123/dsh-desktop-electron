@@ -39,7 +39,7 @@ import { SessionFeed } from './sessions.ts'
 import type { SessionSummary } from './sessions.ts'
 import { resolveTrayLanguage, trayMenuTemplate, trayTooltip } from './tray-menu.ts'
 import { queryWindowsSystemUsesLightTheme, traySurfaceIsDark } from './system-theme.ts'
-import { TITLEBAR_STATE_PROBE, compositedSurfaceColor, overlayPaletteForSurface, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
+import { TITLEBAR_GESTURE_PROBE_DELAYS_MS, TITLEBAR_STATE_PROBE, compositedSurfaceColor, overlayPaletteForSurface, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
 import type { TrayLang } from './tray-menu.ts'
 const APP_ID = 'ai.deepseek.dsh-desktop'
 const WINDOW_TITLE = 'DeepSeek Harness'
@@ -444,21 +444,45 @@ function installTitlebarFusion(window: BrowserWindow, guiSurface?: string): void
       stopTitlebarSync()
       return
     }
-    void window.webContents.executeJavaScript(TITLEBAR_STATE_PROBE).then((state) => {
-      if (state === null || typeof state !== 'object') return
-      const { surface, scrim } = state as { surface?: unknown; scrim?: unknown }
-      if (typeof surface !== 'string') return
-      // While a modal's dim mask is open the controls must read as part of the
-      // dimmed page, not as a bright strip floating above it: composite the
-      // mask color over the surface before re-skinning the overlay.
-      const effective = typeof scrim === 'string' ? compositedSurfaceColor(surface, scrim) ?? surface : surface
-      if (effective === titlebarSurface) return
-      applyTitlebarSurface(window, effective)
-    }).catch(() => {
-      // Mid-navigation or not yet ready; the next poll re-reads the meta.
-    })
+    void pollTitlebarState(window)
   }, TITLEBAR_SYNC_POLL_MS)
   titlebarSyncTimer.unref()
+  // Modal open/close are user gestures, and the controls must follow them
+  // without waiting for the next poll (a stale-bright or stale-dim strip is
+  // exactly the jarring artifact the fusion exists to avoid). Every click and
+  // key press schedules two quick probes — the DOM settles a beat after the
+  // event — while the slow poll remains the fallback for transitions no
+  // gesture produced (e.g. a theme change driven by the system clock).
+  window.webContents.on('input-event', (_event, input) => {
+    if (input.type !== 'mouseDown' && input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
+    for (const delay of TITLEBAR_GESTURE_PROBE_DELAYS_MS) {
+      const timer = setTimeout(() => {
+        if (!window.isDestroyed() && !window.webContents.isDestroyed()) void pollTitlebarState(window)
+      }, delay)
+      timer.unref()
+    }
+  })
+}
+
+/**
+ * One surface-state probe: read the GUI's published state (theme-color meta,
+ * modal dim mask) and re-skin the overlay when the effective color changed.
+ */
+async function pollTitlebarState(window: BrowserWindow): Promise<void> {
+  try {
+    const state = await window.webContents.executeJavaScript(TITLEBAR_STATE_PROBE)
+    if (state === null || typeof state !== 'object') return
+    const { surface, scrim } = state as { surface?: unknown; scrim?: unknown }
+    if (typeof surface !== 'string') return
+    // While a modal's dim mask is open the controls must read as part of the
+    // dimmed page, not as a bright strip floating above it: composite the
+    // mask color over the surface before re-skinning the overlay.
+    const effective = typeof scrim === 'string' ? compositedSurfaceColor(surface, scrim) ?? surface : surface
+    if (effective === titlebarSurface) return
+    applyTitlebarSurface(window, effective)
+  } catch {
+    // Mid-navigation or not yet ready; the next poll re-reads the meta.
+  }
 }
 
 function stopTitlebarSync(): void {

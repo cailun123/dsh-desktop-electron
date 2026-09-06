@@ -63,6 +63,17 @@ export const CAPTION_TRAILING_CLEARANCE_PX = 144
 export const CAPTION_LEADING_CLEARANCE_MACOS_PX = 78
 
 /**
+ * Delays (ms) after a user gesture (mouse down / key down) at which the shell
+ * re-probes the GUI surface state, so a modal's dim mask registers with the
+ * overlay controls near-instantly instead of at the next poll tick. The first
+ * beat is immediate: dsh commits a click-opened modal synchronously (React
+ * discrete event), so by the time the probe's script evaluates the mask is
+ * already in the DOM. The later beats catch the slower cases — a commit that
+ * landed a frame or two late, entrance/exit transitions, and the final settle.
+ */
+export const TITLEBAR_GESTURE_PROBE_DELAYS_MS: readonly number[] = [0, 60, 250, 600]
+
+/**
  * Fallback height (px) of the hero-phase drag strip when
  * `env(titlebar-area-height)` is unavailable (platforms without the overlay,
  * e.g. macOS hiddenInset).

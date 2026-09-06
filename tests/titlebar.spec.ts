@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CAPTION_LEADING_CLEARANCE_MACOS_PX,
   CAPTION_TRAILING_CLEARANCE_PX,
+  TITLEBAR_GESTURE_PROBE_DELAYS_MS,
   TITLEBAR_STATE_PROBE,
   TITLEBAR_STRIP_FALLBACK_PX,
   captionClearanceForPlatform,
@@ -128,6 +129,15 @@ describe('surface probe', () => {
     // Only translucent full-viewport layers count as a dim mask.
     expect(TITLEBAR_STATE_PROBE).toContain('alpha > 0 && alpha < 1')
     expect(TITLEBAR_STATE_PROBE).toContain('rect.right < vw - 1')
+  })
+
+  it('schedules gesture probes fast enough to outrun the eye', () => {
+    // The first beat must be immediate: dsh commits a click-opened modal
+    // synchronously, so an immediate probe already sees the mask; anything
+    // later shows the controls lagging the modal. A settle beat stays for
+    // transitions that land late.
+    expect(TITLEBAR_GESTURE_PROBE_DELAYS_MS[0]).toBe(0)
+    expect(TITLEBAR_GESTURE_PROBE_DELAYS_MS.some((delay) => delay >= 300)).toBe(true)
   })
 })
 
