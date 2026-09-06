@@ -41,18 +41,26 @@ describe('splash page', () => {
 
   it('types the wordmark in as a constant, never-stalling progress bar', () => {
     const html = splashHtml()
-    // One span per character, staggered by a constant delay: fake progress by
-    // design, but the rhythm never pauses.
+    // One span per character, staggered by a constant delay (via the --t
+    // custom property): fake progress by design, but the rhythm never pauses.
     expect(SPLASH_TYPE_TEXT).toBe('DEEPSEEK HARNESS')
     const charCount = (html.match(/class="type-ch"/gu) ?? []).length
     expect(charCount).toBe(SPLASH_TYPE_TEXT.length)
     // First character at the configured start, constant step afterwards.
-    expect(html).toContain(`style="animation-delay:${SPLASH_TYPE_START_S.toFixed(2)}s"`)
+    expect(html).toContain(`style="--t:${SPLASH_TYPE_START_S.toFixed(2)}s"`)
     const secondDelay = (SPLASH_TYPE_START_S + SPLASH_TYPE_STEP_S).toFixed(2)
-    expect(html).toContain(`animation-delay:${secondDelay}s`)
-    // Once the last character lands, the brand-blue cursor blinks forever —
-    // the load always reads as ongoing, never stalled. Dark and light surfaces
-    // use the site's per-theme brand variants (#4d6bfe / #6799fe).
+    expect(html).toContain(`--t:${secondDelay}s`)
+    // The cursor travels with the typing position: every character carries a
+    // trailing cursor segment that lives exactly one step (its ::after), so
+    // the blue block sits beside the newest character and hops right as the
+    // text grows.
+    expect(html).toContain('.type-ch::after')
+    expect(html).toContain('left: calc(100% + 0.14em);')
+    expect(html).toContain(`animation: ch-cursor ${SPLASH_TYPE_STEP_S}s linear forwards;`)
+    expect(html).toContain('animation-delay: var(--t);')
+    // Once the last segment expires, the end-of-line cursor takes over and
+    // blinks forever — the load always reads as ongoing, never stalled. Dark
+    // and light surfaces use the site's per-theme brand variants.
     const cursorDelay = (SPLASH_TYPE_START_S + SPLASH_TYPE_TEXT.length * SPLASH_TYPE_STEP_S).toFixed(2)
     expect(html).toContain(`animation: cursor-blink 1.1s linear ${cursorDelay}s infinite`)
     expect(html).toContain(`--cursor: ${SPLASH_ACCENT}`)
@@ -81,27 +89,46 @@ describe('splash page', () => {
   it('breathes on the 2.8s Codex-style cycle', () => {
     const html = splashHtml()
     expect(SPLASH_BREATHE_MS).toBe(2800)
-    // The entrance starts at 0s so the compositor's one-time warm-up (layer
-    // promotion, shader compile) lands on the first frames while the logo is
-    // still at opacity ≈ 0 — no visible hitch; the breath picks up the moment
-    // the fade-in lands (0.9s), keeping the handoff seamless.
-    expect(html).toContain('logo-in 0.9s cubic-bezier(0.22, 0.61, 0.36, 1) 0s both')
+    // The entrance is the official Harness hero animation (ds-hero-enter,
+    // deepseek.com/harness) at the site's primary-block parameters; the
+    // recolor filter is folded into the animated filter chain (--enter-filter)
+    // so the whale never flashes its original colors mid-entrance, and the
+    // endpoint (--enter-to) is the breathe valley for a seamless handoff.
+    expect(html).toContain('--enter-y: 24px;')
+    expect(html).toContain('--enter-blur: 10px;')
+    expect(html).toContain('--enter-filter: var(--logo-filter);')
+    expect(html).toContain('--enter-to: 0.7;')
+    expect(html).toContain('ds-hero-enter 0.9s ease-out backwards,')
     expect(html).toContain('logo-breathe 2.8s cubic-bezier(0.37, 0, 0.63, 1) 0.9s infinite')
     expect(html).toContain('0%, 100% { transform: translateZ(0) scale(1);    opacity: 0.7; }')
     expect(html).toContain('50%      { transform: translateZ(0) scale(1.05); opacity: 1; }')
   })
 
-  it('hands the logo off from fade-in to breathing without a jump', () => {
+  it('enters the wordmark with the official secondary-block rise before typing starts', () => {
     const html = splashHtml()
-    // logo-in lands on logo-breathe 0%/100% (opacity 0.7, scale 1).
-    expect(html).toContain('to   { opacity: 0.7; transform: translateZ(0) scale(1); }')
+    // Site secondary-block parameters: 16px rise, 0.7s, 0.15s delay — the
+    // block lands (0.85s) before the first character appears (0.9s). Endpoint
+    // opacity defaults to full: the bar never dims.
+    expect(html).toContain('animation: ds-hero-enter 0.7s ease-out 0.15s backwards;')
+    expect(html).toContain('font-size: 24px;')
+  })
+
+  it('hands the logo off from the official entrance to breathing without a jump', () => {
+    const html = splashHtml()
+    // ds-hero-enter lands on the breathe 0%/100% pose: opacity = --enter-to
+    // (0.7 for the logo), identity transform, blur resolved to zero.
+    expect(html).toContain('opacity: var(--enter-to, 1);')
+    expect(html).toContain('transform: translateY(0) translateZ(0);')
+    expect(html).toContain('filter: var(--enter-filter, opacity(1)) blur(0);')
   })
 
   it('uses no gradients at all — the surface is flat, the logo is an image', () => {
     const html = splashHtml()
     expect(html).not.toContain('gradient')
-    expect(html).not.toContain('filter: blur')
     expect(html).not.toContain('drop-shadow')
+    // The only blur() is the official ds-hero-enter de-blur — no other
+    // filter/blur machinery anywhere.
+    expect((html.match(/blur\(/gu) ?? []).length).toBe(2)
   })
 
   it('carries no progress, status or spinner machinery at all', () => {
@@ -204,9 +231,11 @@ describe('splash page', () => {
     const html = splashHtml()
     expect(html).toContain('will-change: opacity')
     expect(html).toContain('will-change: transform, opacity')
-    // Every animated keyframe carries translateZ so the breath stays a 3D
-    // compositor layer end to end — no main-thread repaints mid-loop.
-    expect((html.match(/translateZ\(0\) scale\(/gu) ?? []).length).toBe(4)
+    // The breathing keyframes carry translateZ so the loop stays a 3D
+    // compositor layer — no main-thread repaints mid-breath. (The official
+    // entrance is a one-shot that also animates filter/translateY by design.)
+    expect((html.match(/translateZ\(0\) scale\(/gu) ?? []).length).toBe(2)
+    expect(html).toContain('translateY(var(--enter-y, 20px)) translateZ(0);')
     expect(html).not.toContain('splash-glow')
   })
 

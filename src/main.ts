@@ -30,8 +30,9 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { killProcessTree } from './process-tree.ts'
-import { app, BrowserWindow, dialog, Menu, nativeImage, nativeTheme, shell, Tray, WebContentsView } from './electron-api.ts'
+import { app, BrowserWindow, dialog, Menu, nativeImage, nativeTheme, session, shell, Tray, WebContentsView } from './electron-api.ts'
 import type { MenuItemConstructorOptions } from 'electron'
+import { authCookieRemovals } from './auth-cookies.ts'
 import { resolveWebLaunch, spawnWebLaunch, waitForHttpOk, waitForReadyLine, childExited } from './launcher.ts'
 import { attachSplash, exitSplash, splashPageUrl, SPLASH_BG_DARK, SPLASH_BG_LIGHT, SPLASH_FINALE_MS, SPLASH_MIN_MS, updateSplashTheme } from './splash.ts'
 import { SessionFeed } from './sessions.ts'
@@ -770,7 +771,41 @@ function startReaper(serverPid: number): void {
     .unref()
 }
 
+/**
+ * Purge the harness auth cookies left in the persistent profile by previous
+ * launches (see `auth-cookies.ts` for why they accumulate): a pile of them
+ * pushes every request's Cookie header past the server's HTTP header limit
+ * and the GUI boots into "Failed to load plugins". Best-effort — a purge
+ * failure costs nothing the fresh token URL cannot recover from, except the
+ * growth that brought the pile past the limit, so a persistent failure is
+ * logged and left to surface in the GUI.
+ */
+async function purgeStaleAuthCookies(): Promise<void> {
+  try {
+    const cookieStore = session.defaultSession.cookies
+    // Electron's Cookie leaves domain/path/secure optional; the removal scope
+    // needs all three, so normalize with the defaults Electron stores them under.
+    const removals = authCookieRemovals((await cookieStore.get({})).map((cookie) => ({
+      name: cookie.name,
+      domain: cookie.domain ?? '',
+      path: cookie.path || '/',
+      secure: cookie.secure === true,
+    })))
+    if (removals.length === 0) return
+    console.log(`[dsh-desktop] purging ${removals.length} stale dsh auth cookie(s)`)
+    for (const { url, name } of removals) {
+      await cookieStore.remove(url, name)
+    }
+  } catch (error) {
+    console.warn(`[dsh-desktop] stale auth-cookie purge failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function boot(): Promise<void> {
+  // The purge must complete before the GUI loads (the load's 303 exchange
+  // re-issues the fresh cookie); nothing between here and that load depends
+  // on the profile's cookies.
+  await purgeStaleAuthCookies()
   // The tray menu speaks the language the user configured for dsh; the shell
   // falls back to the system locale when dsh's locale preference is unset.
   // Resolved here (not at module scope) because getLocale() needs app ready.
