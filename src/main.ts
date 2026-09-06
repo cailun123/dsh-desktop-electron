@@ -39,7 +39,7 @@ import { SessionFeed } from './sessions.ts'
 import type { SessionSummary } from './sessions.ts'
 import { resolveTrayLanguage, trayMenuTemplate, trayTooltip } from './tray-menu.ts'
 import { queryWindowsSystemUsesLightTheme, traySurfaceIsDark } from './system-theme.ts'
-import { TITLEBAR_SURFACE_PROBE, overlayPaletteForSurface, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
+import { TITLEBAR_STATE_PROBE, compositedSurfaceColor, overlayPaletteForSurface, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
 import type { TrayLang } from './tray-menu.ts'
 const APP_ID = 'ai.deepseek.dsh-desktop'
 const WINDOW_TITLE = 'DeepSeek Harness'
@@ -59,8 +59,8 @@ const GUI_READY_PROBE_MS = 20_000
 const GUI_READY_POLL_MS = 150
 /** Poll cadence for the tray's session (topic) feed. */
 const SESSION_POLL_MS = 10_000
-/** Poll cadence for the title bar overlay's theme-color sync. */
-const TITLEBAR_SYNC_POLL_MS = 3_000
+/** Poll cadence for the title bar overlay's surface sync (theme + modal scrim). */
+const TITLEBAR_SYNC_POLL_MS = 1_500
 /** dsh's UI theme preference: 'dark' | 'light' | 'system'. */
 type ThemePreference = 'dark' | 'light' | 'system'
 /**
@@ -167,7 +167,7 @@ let sessionFeedError: string | undefined
 let trayLang: TrayLang = 'en'
 /** Poll timer keeping the title bar overlay palette in sync with the GUI theme. */
 let titlebarSyncTimer: NodeJS.Timeout | undefined
-/** Last surface color the overlay was synced to, so the poll only acts on changes. */
+/** Last effective surface color applied to the overlay (scrim-composited when a modal is open). */
 let titlebarSurface: string | undefined
 
 function iconPath(): string {
@@ -425,10 +425,10 @@ function isTransparentColor(value: string): boolean {
 /**
  * Turn the GUI's top strip into the window chrome (the CSS in `titlebar.ts`)
  * and keep the overlay window controls' palette in sync with the GUI's live
- * theme. The poll re-reads the theme-color meta the GUI's theme presenter
- * maintains — the shell stays preload-free, so polling is the theme-change
- * signal. Failures are best-effort: a missed poll just leaves the previous
- * palette in place.
+ * theme. The poll re-reads the surface state the GUI publishes (theme-color
+ * meta, plus any open modal's dim mask — see TITLEBAR_STATE_PROBE) — the
+ * shell stays preload-free, so polling is the change signal. Failures are
+ * best-effort: a missed poll just leaves the previous palette in place.
  * @param window - the window hosting the GUI.
  * @param guiSurface - the GUI body background reported by the readiness
  *   probe, applied immediately when available (the poll covers later changes).
@@ -444,9 +444,16 @@ function installTitlebarFusion(window: BrowserWindow, guiSurface?: string): void
       stopTitlebarSync()
       return
     }
-    void window.webContents.executeJavaScript(TITLEBAR_SURFACE_PROBE).then((value) => {
-      if (typeof value !== 'string' || value === titlebarSurface) return
-      applyTitlebarSurface(window, value)
+    void window.webContents.executeJavaScript(TITLEBAR_STATE_PROBE).then((state) => {
+      if (state === null || typeof state !== 'object') return
+      const { surface, scrim } = state as { surface?: unknown; scrim?: unknown }
+      if (typeof surface !== 'string') return
+      // While a modal's dim mask is open the controls must read as part of the
+      // dimmed page, not as a bright strip floating above it: composite the
+      // mask color over the surface before re-skinning the overlay.
+      const effective = typeof scrim === 'string' ? compositedSurfaceColor(surface, scrim) ?? surface : surface
+      if (effective === titlebarSurface) return
+      applyTitlebarSurface(window, effective)
     }).catch(() => {
       // Mid-navigation or not yet ready; the next poll re-reads the meta.
     })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SPLASH_ACCENT, SPLASH_ACCENT_LIGHT, SPLASH_BG_DARK, SPLASH_BG_LIGHT, SPLASH_BREATHE_MS, SPLASH_EXIT_MS, SPLASH_TYPE_START_S, SPLASH_TYPE_STEP_S, SPLASH_TYPE_TEXT, splashPageUrl } from '../src/splash.ts'
+import { SPLASH_BG_DARK, SPLASH_BG_LIGHT, SPLASH_BREATHE_MS, SPLASH_EXIT_MS, splashPageUrl } from '../src/splash.ts'
 
 const DATA_URL_PREFIX = 'data:text/html;charset=utf-8,'
 
@@ -15,10 +15,11 @@ describe('splash page', () => {
     expect(splashPageUrl()).toMatch(/^data:text\/html;charset=utf-8,/u)
   })
 
-  it('contains only the breathing logo, its type-in progress bar and nothing else', () => {
+  it('shows the breathing logo and the official wordmark, and nothing else', () => {
     const html = splashHtml()
     expect(html).toContain('splash-logo')
     expect(html).toContain('splash-type')
+    expect(html).not.toContain('splash-loader')
     // The glow/halo and the wash layers are gone for good — guard against
     // them sneaking back in.
     expect(html).not.toContain('splash-glow')
@@ -26,11 +27,10 @@ describe('splash page', () => {
     expect(html).not.toContain('--glow')
     expect(html).not.toContain('--halo')
     expect(html).not.toContain('--wash')
-    // The whale is the only content image; no SVG lettering.
+    // The whale is the only content image; the wordmark is inline SVG.
     const imgCount = (html.match(/<img/gu) ?? []).length
     expect(imgCount).toBe(1)
-    expect(html).not.toContain('<svg')
-    // No extra widgets beyond the type-in bar.
+    // No extra widgets at all.
     expect(html).not.toContain('splash-footer')
     expect(html).not.toContain('splash-track')
     expect(html).not.toContain('splash-fill')
@@ -39,60 +39,51 @@ describe('splash page', () => {
     expect(html).not.toMatch(/@keyframes sp-[abc]/u)
   })
 
-  it('types the wordmark in as a constant, never-stalling progress bar', () => {
+  it('has no typing machinery — the wordmark renders whole', () => {
     const html = splashHtml()
-    // One span per character, staggered by a constant delay (via the --t
-    // custom property): fake progress by design, but the rhythm never pauses.
-    expect(SPLASH_TYPE_TEXT).toBe('DEEPSEEK HARNESS')
-    const charCount = (html.match(/class="type-ch"/gu) ?? []).length
-    expect(charCount).toBe(SPLASH_TYPE_TEXT.length)
-    // First character at the configured start, constant step afterwards.
-    expect(html).toContain(`style="--t:${SPLASH_TYPE_START_S.toFixed(2)}s"`)
-    const secondDelay = (SPLASH_TYPE_START_S + SPLASH_TYPE_STEP_S).toFixed(2)
-    expect(html).toContain(`--t:${secondDelay}s`)
-    // The cursor travels with the typing position: every character carries a
-    // trailing cursor segment that lives exactly one step (its ::after), so
-    // the blue block sits beside the newest character and hops right as the
-    // text grows.
-    expect(html).toContain('.type-ch::after')
-    expect(html).toContain('left: calc(100% + 0.14em);')
-    expect(html).toContain(`animation: ch-cursor ${SPLASH_TYPE_STEP_S}s linear forwards;`)
-    expect(html).toContain('animation-delay: var(--t);')
-    // Once the last segment expires, the end-of-line cursor takes over and
-    // blinks forever — the load always reads as ongoing, never stalled. Dark
-    // and light surfaces use the site's per-theme brand variants.
-    const cursorDelay = (SPLASH_TYPE_START_S + SPLASH_TYPE_TEXT.length * SPLASH_TYPE_STEP_S).toFixed(2)
-    expect(html).toContain(`animation: cursor-blink 1.1s linear ${cursorDelay}s infinite`)
-    expect(html).toContain(`--cursor: ${SPLASH_ACCENT}`)
-    expect(html).toContain(`--cursor: ${SPLASH_ACCENT_LIGHT}`)
+    // The per-slot/per-character reveal is gone: no --t travel, no type-in
+    // keyframes, no cursor machinery anywhere.
+    expect(html).not.toContain('type-ch')
+    expect(html).not.toContain('--t:')
+    expect(html).not.toContain('type-in')
+    expect(html).not.toContain('type-cursor')
+    expect(html).not.toContain('cursor-run')
+    expect(html).not.toContain('cursor-blink')
+    expect(html).not.toContain('--cursor')
+    // The HARNESS chip keeps its inverted treatment (part of the official
+    // wordmark — the removed badge was the hand-off 预览版 chip).
+    expect(html).toContain('.type-badge-text { fill: var(--bg); }')
   })
 
-  it('sets the wordmark in Host Grotesk, the Harness site display face', () => {
+  it('renders the wordmark as the official lockup lettering, not a font', () => {
     const html = splashHtml()
-    // The font ships embedded (latin subset) so the self-contained page works
-    // offline and inside app.asar; the CSP must therefore allow data: fonts.
-    expect(html).toContain('@font-face')
-    expect(html).toContain('font-family: "Host Grotesk"')
-    expect(html).toContain('font-src data:')
-    expect(html).toContain('data:font/woff2;base64,')
-    // Site display stack, at the site's section-title tier (24px) so the
-    // wordmark locks against the 64px mark like the site header lockup.
-    expect(html).toContain('font-family: "Host Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif')
-    expect(html).toContain('font-size: 24px;')
+    // The lettering is the actual vector paths from the app header lockup
+    // (whale excluded — the breathing PNG plays above), scaled up one step
+    // from the official header size.
+    expect(html).toContain('<svg class="splash-type" viewBox="25.46 3.4 155.99 18.3"')
+    expect(html).toContain('height: 42px;')
+    // 9 letter paths (k = stem + arm) + 7 badge letters = official path data
+    // inline.
+    expect((html.match(/<path d="/gu) ?? []).length).toBe(16)
+    // The embedded Host Grotesk font is gone — no font machinery at all.
+    expect(html).not.toContain('@font-face')
+    expect(html).not.toContain('Host Grotesk')
+    expect(html).not.toContain('font-src')
+    expect(html).not.toContain('woff2')
   })
 
-  it('keeps the logo refined (64px)', () => {
+  it('keeps the logo refined (76px)', () => {
     const html = splashHtml()
-    expect(html).toContain('width: 64px; height: 64px;')
+    expect(html).toContain('width: 76px; height: 76px;')
   })
 
-  it('breathes on the 2.8s Codex-style cycle', () => {
+  it('breathes on the 2.8s cycle after the official entrance', () => {
     const html = splashHtml()
     expect(SPLASH_BREATHE_MS).toBe(2800)
     // The entrance is the official Harness hero animation (ds-hero-enter,
     // deepseek.com/harness) at the site's primary-block parameters; the
     // recolor filter is folded into the animated filter chain (--enter-filter)
-    // so the whale never flashes its original colors mid-entrance, and the
+    // so the whale never flashes its original colors mid-entrance. The
     // endpoint (--enter-to) is the breathe valley for a seamless handoff.
     expect(html).toContain('--enter-y: 24px;')
     expect(html).toContain('--enter-blur: 10px;')
@@ -104,20 +95,18 @@ describe('splash page', () => {
     expect(html).toContain('50%      { transform: translateZ(0) scale(1.05); opacity: 1; }')
   })
 
-  it('enters the wordmark with the official secondary-block rise before typing starts', () => {
+  it('enters the wordmark with the official secondary-block rise', () => {
     const html = splashHtml()
-    // Site secondary-block parameters: 16px rise, 0.7s, 0.15s delay — the
-    // block lands (0.85s) before the first character appears (0.9s). Endpoint
+    // Site secondary-block parameters: 16px rise, 0.7s, 0.15s delay. Endpoint
     // opacity defaults to full: the bar never dims.
     expect(html).toContain('animation: ds-hero-enter 0.7s ease-out 0.15s backwards;')
-    expect(html).toContain('font-size: 24px;')
   })
 
   it('hands the logo off from the official entrance to breathing without a jump', () => {
     const html = splashHtml()
-    // ds-hero-enter lands on the breathe 0%/100% pose: opacity = --enter-to
-    // (0.7 for the logo), identity transform, blur resolved to zero.
-    expect(html).toContain('opacity: var(--enter-to, 1);')
+    // ds-hero-enter lands on the breathe 0%/100% pose: opacity 0.7, identity
+    // transform, blur resolved to zero — identical to the resting styles.
+    expect(html).toContain('opacity: 0.7;')
     expect(html).toContain('transform: translateY(0) translateZ(0);')
     expect(html).toContain('filter: var(--enter-filter, opacity(1)) blur(0);')
   })
@@ -126,9 +115,9 @@ describe('splash page', () => {
     const html = splashHtml()
     expect(html).not.toContain('gradient')
     expect(html).not.toContain('drop-shadow')
-    // The only blur() is the official ds-hero-enter de-blur — no other
-    // filter/blur machinery anywhere.
-    expect((html.match(/blur\(/gu) ?? []).length).toBe(2)
+    // The only blur() uses are the official ds-hero-enter de-blur (2) and
+    // the hand-off reverse exit blur (1) — no other filter machinery.
+    expect((html.match(/blur\(/gu) ?? []).length).toBe(3)
   })
 
   it('carries no progress, status or spinner machinery at all', () => {
@@ -188,13 +177,13 @@ describe('splash page', () => {
     expect(html).toContain(SPLASH_BG_LIGHT)
   })
 
-  it('keeps the exit fade duration in sync with the page transition', () => {
+  it('keeps the exit hand-off duration in sync with the page sequence', () => {
     const html = splashHtml()
     // The main process waits this long after __exit before removing the
-    // splash view, so the page must finish its fade by then: the whole layer
-    // (surface + breathing logo) fades in one gentle sine leg and the GUI
-    // appears to fade in.
-    expect(SPLASH_EXIT_MS).toBe(700)
+    // splash view. The page fits the whole official hand-off inside that
+    // budget: wordmark reverse exit 320ms → title enter 0.7s → beat →
+    // whole-layer fade 700ms (320 + 700 + 380 + 700 = 2100).
+    expect(SPLASH_EXIT_MS).toBe(2100)
     // The card fade is JS-driven: the enter animation's forwards fill
     // suppresses class-driven transitions (the layer used to vanish
     // instantly the moment .exit was applied).
@@ -202,14 +191,33 @@ describe('splash page', () => {
     expect(html).toContain("card.style.opacity = '0'")
   })
 
-  it('drives the exit fade from __exit: keep the breath playing, fade the whole layer, flip the exit marker', () => {
+  it('swaps the wordmark for the GUI hero title with the official animation at hand-off', () => {
+    const html = splashHtml()
+    // The title is the GUI empty-state hero copy (探索未至之境), hidden
+    // until the hand-off swap.
+    expect(html).toContain('探索未至之境')
+    expect(html).not.toContain('预览版')
+    expect(html).toContain('.splash-title.is-in {')
+    expect(html).toContain('--enter-y: 18px;')
+    expect(html).toContain('--enter-blur: 8px;')
+    expect(html).toContain('animation: ds-hero-enter 0.7s ease-out both;')
+    // Official title typography, probed from the running GUI: 26px,
+    // weight 500, the system sans stack, normal letter-spacing.
+    expect(html).toContain('font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;')
+    expect(html).toContain('font-size: 26px;')
+    expect(html).toContain('font-weight: 500;')
+    expect(html).toContain('letter-spacing: normal;')
+    expect(html).toContain('--title: rgb(15, 17, 21);')
+  })
+
+  it('drives the hand-off from __exit: reverse exit, title enter, fade the whole layer, flip the exit marker', () => {
     const html = splashHtml()
     // Greedy across the whole function body so the captured string contains
     // the inner `if (...) { ... }` blocks, not just up to the first `}`.
     const exitFn = (html.match(/window\.__exit = function[\s\S]*add\('exit'\);\s*\n\s*\};/u) ?? [''])[0]
     expect(exitFn).not.toBe('')
     // 1) only the surface layer's enter animation is detached (getComputedStyle
-    //    → inline). The breathing logo and its glow are never touched.
+    //    → inline). The logo and wordmark bodies are never frozen.
     expect(exitFn).toContain("querySelector('.card')")
     expect(exitFn).toContain('getComputedStyle')
     expect(exitFn).toContain("card.style.animation = 'none'")
@@ -217,13 +225,23 @@ describe('splash page', () => {
     expect(exitFn).not.toContain("querySelector('.splash-glow')")
     expect(exitFn).not.toContain('logo.style')
     expect(exitFn).not.toContain('glow.style')
-    // 2) one fade leg: the whole layer (surface + breathing logo) fades on a
-    //    sine ease — the fade itself is the last breath.
+    // 2) official reverse exit: the wordmark rises and blurs out (320ms),
+    //    then the title enters with ds-hero-enter at 320ms.
+    expect(exitFn).toContain("querySelector('.splash-type')")
+    expect(exitFn).not.toContain("querySelector('.splash-loader')")
+    expect(exitFn).toContain("'opacity 320ms ease-in, transform 320ms ease-in, filter 320ms ease-in'")
+    expect(exitFn).toContain("translateY(-10px)")
+    expect(exitFn).toContain("blur(4px)")
+    expect(exitFn).toContain("title.classList.add('is-in')")
+    // reduced-motion: the title shows statically instead of animating.
+    expect(exitFn).toContain('(prefers-reduced-motion: reduce)')
+    expect(exitFn).toContain("title.style.opacity = '1'")
+    // 3) after the beat, the whole layer fades on a sine ease (700ms).
     expect(exitFn).toContain("card.style.transition = 'opacity 700ms cubic-bezier(0.45, 0, 0.55, 1)'")
     expect(exitFn).toContain("card.style.opacity = '0'")
-    // 3) no wash machinery left behind
+    // 4) no wash machinery left behind
     expect(exitFn).not.toContain('splash-wash')
-    // 4) body class still flips as the exit marker
+    // 5) body class still flips as the exit marker
     expect(exitFn).toContain("document.body.classList.add('exit')")
   })
 
@@ -232,8 +250,8 @@ describe('splash page', () => {
     expect(html).toContain('will-change: opacity')
     expect(html).toContain('will-change: transform, opacity')
     // The breathing keyframes carry translateZ so the loop stays a 3D
-    // compositor layer — no main-thread repaints mid-breath. (The official
-    // entrance is a one-shot that also animates filter/translateY by design.)
+    // compositor layer — no main-thread repaints mid-breath. (The entrance is
+    // a one-shot that also animates filter/translateY by design.)
     expect((html.match(/translateZ\(0\) scale\(/gu) ?? []).length).toBe(2)
     expect(html).toContain('translateY(var(--enter-y, 20px)) translateZ(0);')
     expect(html).not.toContain('splash-glow')
@@ -245,9 +263,7 @@ describe('splash page', () => {
     // Only the idle breathing stops; the exit itself is functional (a fade),
     // so it keeps working instead of snapping instantly.
     expect(html).toContain('.splash-logo { animation: none !important; opacity: 1 !important; }')
-    // The wordmark and cursor render fully static — info stays, motion stops.
-    expect(html).toContain('.type-ch { animation: none !important; opacity: 1 !important; }')
-    expect(html).toContain('.type-cursor { animation: none !important; opacity: 1 !important; }')
+    // The wordmark renders fully static — info stays, motion stops.
     expect(html).toContain('.card { opacity: 1 !important; }')
     expect(html).not.toContain('transition-duration: 0.01s')
   })
