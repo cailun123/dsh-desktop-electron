@@ -8,7 +8,9 @@
  * dsh's own boot spinner and the animation ends exactly at the main UI.
  *
  * The visual is a Codex-style breathing logo over a flat monochrome surface:
- * the centered whale rides a gentle scale/opacity swell, and beneath it the
+ * the centered whale enters with the official Harness hero animation
+ * (`ds-hero-enter`: rise + de-blur, deepseek.com/harness) and then rides a
+ * gentle scale/opacity swell, and beneath it the
  * wordmark "DEEPSEEK HARNESS" types in character by character as a progress
  * bar — a constant, never-stalling rhythm (fake progress by design); once
  * fully revealed, a DeepSeek-blue block cursor keeps blinking so the load
@@ -173,14 +175,17 @@ export function splashPageUrl(initialTheme?: 'dark' | 'light'): string {
  */
 function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   const themeClass = initialTheme === 'dark' ? ' class="force-dark"' : initialTheme === 'light' ? ' class="force-light"' : ''
-  // One span per character, each with its own CSS delay: a constant type-in
-  // rhythm rendered entirely by the compositor — no JS timers involved.
+  // One span per character; the reveal time travels as the --t custom
+  // property (the char's own fade-in and its trailing cursor segment both
+  // read it). Constant type-in rhythm rendered entirely by the CSS engine —
+  // no JS timers involved.
   const typeSpans = [...SPLASH_TYPE_TEXT].map((ch, i) => {
-    const delay = (SPLASH_TYPE_START_S + i * SPLASH_TYPE_STEP_S).toFixed(2)
+    const t = (SPLASH_TYPE_START_S + i * SPLASH_TYPE_STEP_S).toFixed(2)
     const glyph = ch === ' ' ? '&nbsp;' : ch
-    return `<span class="type-ch" style="animation-delay:${delay}s">${glyph}</span>`
+    return `<span class="type-ch" style="--t:${t}s">${glyph}</span>`
   }).join('')
-  // The cursor starts blinking the moment the last character has landed.
+  // The blinking end-of-line cursor takes over the moment the last
+  // character's traveling cursor segment expires.
   const TYPE_CURSOR_DELAY_S = SPLASH_TYPE_START_S + SPLASH_TYPE_TEXT.length * SPLASH_TYPE_STEP_S
   const html = `<!DOCTYPE html>
 <html lang="zh-CN"${themeClass}>
@@ -266,19 +271,34 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
     filter: var(--logo-filter);
     transform: translateZ(0);
     will-change: transform, opacity;
-    /* 入场 0s 即启动：合成器首次提升图层/编译着色器的一次性开销落在
-       opacity≈0 的头几帧里，肉眼不可见；0.9s 落点与呼吸 0% 状态无缝
-       交接。 */
+    /* 入场 = Harness 官网 ds-hero-enter：主块参数（上浮 24px + 10px 模糊，
+       0.9s ease-out）。--enter-filter 把去色滤镜编入动画的 filter 链，避免
+       官方 keyframes 整体覆盖 filter 时鲸鱼闪现原色；终点 opacity 适配为
+       呼吸波谷 0.7，0.9s 与呼吸 0% 状态无缝交接（呼吸恰好此刻起播）。 */
+    --enter-y: 24px;
+    --enter-blur: 10px;
+    --enter-filter: var(--logo-filter);
+    --enter-to: 0.7;
     animation:
-      logo-in 0.9s cubic-bezier(0.22, 0.61, 0.36, 1) 0s both,
+      ds-hero-enter 0.9s ease-out backwards,
       logo-breathe 2.8s cubic-bezier(0.37, 0, 0.63, 1) 0.9s infinite;
   }
 
-  /* 入场：logo 淡入；落点停在呼吸曲线 0% 状态，交接无跳变。transform
-     里带 translateZ，保证动画全程是 3D 合成层。 */
-  @keyframes logo-in {
-    from { opacity: 0; transform: translateZ(0) scale(0.95); }
-    to   { opacity: 0.7; transform: translateZ(0) scale(1); }
+  /* 官网 ds-hero-enter 原样移植（deepseek.com/harness 的 hero 入场系统），
+     仅两处适配：transform 保留 translateZ 维持合成层；终点透明度与 blur
+     归零后的滤镜链通过自定义属性按元素解析（logo 回呼吸波谷，字标条回
+     全亮）。 */
+  @keyframes ds-hero-enter {
+    0% {
+      opacity: 0;
+      transform: translateY(var(--enter-y, 20px)) translateZ(0);
+      filter: var(--enter-filter, opacity(1)) blur(var(--enter-blur, 0px));
+    }
+    to {
+      opacity: var(--enter-to, 1);
+      transform: translateY(0) translateZ(0);
+      filter: var(--enter-filter, opacity(1)) blur(0);
+    }
   }
 
   /* 呼吸：logo 2.8s 内 scale 1→1.05、opacity 0.7→1，幅度克制、贴近
@@ -289,9 +309,10 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
     50%      { transform: translateZ(0) scale(1.05); opacity: 1; }
   }
 
-  /* 打字进度条：字标逐字符浮现，节奏恒定（假进度，但永不停顿）。打完后
-     品牌蓝方块光标持续闪烁，加载感不中断。每字符只有一次 opacity 过渡
-     （compositor 友好），全部时序由 CSS delay 编排，无 JS 定时器。 */
+  /* 打字进度条：字标逐字符浮现，节奏恒定（假进度，但永不停顿）。光标随
+     打字位置逐格右移：每个字符的 ::after 是一段只在“本字符出现 → 下一
+     字符出现”之间存活的品牌蓝光标，到哪显示到哪；打完后行尾光标接管并
+     持续闪烁，加载感不中断。全部时序由 CSS delay 编排，无 JS 定时器。 */
   .splash-type {
     display: flex;
     /* Harness 官网 --ds-font-display 字体栈（Host Grotesk 已内嵌）；
@@ -304,20 +325,45 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
     /* 抵消末字符后面的字距，保持视觉居中 */
     margin-right: -0.3em;
     color: var(--type);
+    /* 官网 ds-hero-enter 次块参数：上浮 16px、0.7s、延迟 0.15s——在打字
+       开始（0.9s）前落定；终点全亮（--enter-to 默认 1）。 */
+    --enter-y: 16px;
+    animation: ds-hero-enter 0.7s ease-out 0.15s backwards;
   }
   .type-ch {
+    position: relative;
     opacity: 0;
     animation: type-in 0.16s ease-out both;
+    animation-delay: var(--t);
   }
   @keyframes type-in { to { opacity: 1; } }
 
+  /* 游走光标段：贴在本字符右侧，存活一个步进时长后硬切换到下一段。 */
+  .type-ch::after {
+    content: "";
+    position: absolute;
+    left: calc(100% + 0.14em);
+    top: 50%;
+    width: 12px; height: 22px;
+    transform: translateY(-50%);
+    background: var(--cursor);
+    opacity: 0;
+    animation: ch-cursor ${SPLASH_TYPE_STEP_S}s linear forwards;
+    animation-delay: var(--t);
+  }
+  @keyframes ch-cursor {
+    0%, 99% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* 行尾光标：最后一个游走段到期（0.9s + 16 × 0.18s = 3.78s）的瞬间接管，
+     此后持续闪烁，永不停止。 */
   .type-cursor {
     align-self: center;
     width: 12px; height: 22px;
     margin-left: 0.14em;
     background: var(--cursor);
     opacity: 0;
-    /* 末字符落定（0.9s + 16 × 0.18s = 3.78s）后开始闪烁，永不停止 */
     animation: cursor-blink 1.1s linear ${TYPE_CURSOR_DELAY_S}s infinite;
   }
   @keyframes cursor-blink {
@@ -329,8 +375,11 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
      保持可用，避免系统开启该选项时退出变成瞬间切换。 */
   @media (prefers-reduced-motion: reduce) {
     .splash-logo { animation: none !important; opacity: 1 !important; }
-    /* 静态展示完整字标与光标：信息仍在，动态全部停止。 */
+    /* 静态展示完整字标与行尾光标：信息仍在，动态全部停止（游走段保持
+       隐藏，只留行尾那一个；官方入场动画一并停用）。 */
+    .splash-type { animation: none !important; }
     .type-ch { animation: none !important; opacity: 1 !important; }
+    .type-ch::after { animation: none !important; }
     .type-cursor { animation: none !important; opacity: 1 !important; }
     .card { opacity: 1 !important; }
   }
