@@ -50,7 +50,7 @@ import type { WebContents } from './electron-api.ts'
  * a gentle sine ease (700ms) — the GUI appears to fade in. Nothing is frozen
  * mid-pose: the fade itself is the last beat of the sequence.
  */
-export const SPLASH_EXIT_MS = 2100
+export const SPLASH_EXIT_MS = 2200
 
 /** Breathing pulse period (ms) for the logo. */
 export const SPLASH_BREATHE_MS = 2800
@@ -252,29 +252,28 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   }
   @keyframes enter { to { opacity: 1; } }
 
-  /* 正中：鲸鱼 logo + 官方字标。入场只动 transform/opacity/filter，留在
-     合成器线程；落定后鲸鱼固定显示。 */
+  /* 舞台：两阶段绝对定位。阶段一只有字标（辉光扫过）；交接时鲸鱼 + 标题
+     出现——互不挤占布局，无跳动。 */
   .splash {
     position: absolute; inset: 0;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    gap: 12px;
     transform: translateZ(0);
   }
+  /* 鲸鱼：初始隐藏（opacity 0），交接时以官方主块参数入场（上浮 24px +
+     10px 模糊，0.9s），落定接呼吸循环。定位在字标正上方 12px 处。 */
   .splash-logo {
-    position: relative;
+    position: absolute;
+    top: calc(50% - 109px); left: calc(50% - 38px);
     width: 76px; height: 76px;
     filter: var(--logo-filter);
     transform: translateZ(0);
     will-change: transform, opacity;
-    /* 入场 = Harness 官网 ds-hero-enter：主块参数（上浮 24px + 10px 模糊，
-       0.9s ease-out）。--enter-filter 把去色滤镜编入动画的 filter 链，避免
-       官方 keyframes 整体覆盖 filter 时鲸鱼闪现原色；终点 opacity 适配为
-       呼吸波谷 0.7，0.9s 与呼吸 0% 状态无缝交接（呼吸恰好此刻起播）。 */
+    opacity: 0;
     --enter-y: 24px;
     --enter-blur: 10px;
     --enter-filter: var(--logo-filter);
     --enter-to: 0.7;
+  }
+  .splash-logo.is-in {
     animation:
       ds-hero-enter 0.9s ease-out backwards,
       logo-breathe 2.8s cubic-bezier(0.37, 0, 0.63, 1) 0.9s infinite;
@@ -291,7 +290,7 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
       filter: var(--enter-filter, opacity(1)) blur(var(--enter-blur, 0px));
     }
     to {
-      opacity: 1;
+      opacity: var(--enter-to, 1);
       transform: translateY(0) translateZ(0);
       filter: var(--enter-filter, opacity(1)) blur(0);
     }
@@ -306,11 +305,12 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   }
 
   /* 官方字标：应用头部 lockup 的 "deepseek HARNESS" 矢量路径整体呈现。 */
-  /* 字标 + 加载器容器：交接标题覆盖在其上方（字标槽位）。 */
+  /* 字标容器：绝对居中（字标高 42px → top = 50% - 21px）；交接标题覆盖
+     在字标槽位上。 */
   .splash-lockup {
-    position: relative;
+    position: absolute;
+    top: calc(50% - 21px); left: 0; right: 0;
     display: flex; flex-direction: column; align-items: center;
-    gap: 12px;
   }
   .splash-type {
     height: 42px;
@@ -321,6 +321,18 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   }
   /* HARNESS 徽章：官方反白胶囊——墨色胶囊 + 页面底色文字。 */
   .type-badge-text { fill: var(--bg); }
+
+  /* 辉光扫过：亮色副本整体裁剪进字标字形，一条柔光带周期性从左向右划
+     过（扫 1.32s、歇 1.08s），加载中的呼吸感来自这里。只动 transform，
+     留在合成器线程。 */
+  .wm-shine-band {
+    animation: shine-sweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+  @keyframes shine-sweep {
+    0% { transform: translateX(0); }
+    55% { transform: translateX(265px); }
+    100% { transform: translateX(265px); }
+  }
 
   /* 交接标题：加载完成时字标退场后，官方 Hero 的“探索未至之境”
      以 ds-hero-enter 入场（GUI 空态标题同款文案），中文字重用系统黑体栈。
@@ -334,7 +346,7 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
   .splash-title.is-in {
     --enter-y: 18px;
     --enter-blur: 8px;
-    animation: ds-hero-enter 0.7s ease-out both;
+    animation: ds-hero-enter 0.7s ease-out 0.15s both;
   }
   .title-text {
     /* 官方渲染参数：从运行中的 GUI 空态标题逐项读取（26px / 500 / 系统栈，
@@ -361,7 +373,18 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
     <div class="splash">
       <img class="splash-logo" src="${WHALE_PNG_DATA_URL}" alt="DeepSeek" draggable="false">
       <div class="splash-lockup">
-        <svg class="splash-type" viewBox="${WORDMARK_VIEW_BOX}" aria-hidden="true" focusable="false">${letterPaths}${badge}</svg>
+        <svg class="splash-type" viewBox="${WORDMARK_VIEW_BOX}" aria-hidden="true" focusable="false">
+          <defs>
+            <clipPath id="wm-clip">${letterPaths}${badge}</clipPath>
+            <linearGradient id="wm-shine" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+              <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.9"/>
+              <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <g>${letterPaths}${badge}</g>
+          <g clip-path="url(#wm-clip)"><rect class="wm-shine-band" x="-45" y="0" width="46" height="22" fill="url(#wm-shine)"/></g>
+        </svg>
         <div class="splash-title" aria-hidden="true"><span class="title-text">探索未至之境</span></div>
       </div>
     </div>
@@ -375,39 +398,41 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
         if (theme === 'dark') htmlEl.classList.add('force-dark');
         else if (theme === 'light') htmlEl.classList.add('force-light');
       };
-      // 退出交接“字标退场 → 探索未至之境入场 → 整层淡出，淡入主界面”：
+      // 退出交接“字标退场 → 鲸鱼 + 探索未至之境入场 → 整层淡出”：
       // 0) 摘掉底色层的 enter 动画（forwards 填充会压住后续的内联过渡，
-      //    必须先转成内联样式）——logo、字标、加载器本体不冻结；
-      // 1) 官方反向退场：字标与加载器上浮 + 模糊淡出（320ms ease-in）；
-      // 2) 官方 ds-hero-enter 入场：“探索未至之境”上浮 + 去模糊
-      //    （0.7s，GUI 空态标题同款文案）；reduced-motion 下直接静态显示；
-      // 3) 短暂停顿后底色层 700ms 正弦淡出，固定 logo 随层一起消失，
-      //    主界面从后面透出；
-      // 4) 320 + 700 + 380 停顿 + 700 淡出 = ${SPLASH_EXIT_MS}ms，与主进程
+      //    必须先转成内联样式）；
+      // 1) 官方反向退场：字标上浮 + 模糊淡出（320ms ease-in）；
+      // 2) 鲸鱼以官方主块参数入场（0.9s），“探索未至之境”以官方次块参数
+      //    随后入场（0.7s + 0.15s 交错）；reduced-motion 下直接静态显示；
+      // 3) 停顿后底色层 700ms 正弦淡出，主界面从后面透出；
+      // 4) 320 + 900 + 280 停顿 + 700 淡出 = ${SPLASH_EXIT_MS}ms，与主进程
       //    的 SPLASH_EXIT_MS 对齐。
       window.__exit = function () {
         var card = document.querySelector('.card');
         var lockup = document.querySelector('.splash-type');
+        var whale = document.querySelector('.splash-logo');
         var title = document.querySelector('.splash-title');
         var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         if (card !== null) {
           card.style.opacity = getComputedStyle(card).opacity;
           card.style.animation = 'none';
         }
-        var out = [lockup];
-        for (var i = 0; i < out.length; i++) {
-          var el = out[i];
-          if (el === null) continue;
-          el.style.transition = 'opacity 320ms ease-in, transform 320ms ease-in, filter 320ms ease-in';
-          void el.offsetWidth;
-          el.style.opacity = '0';
-          el.style.transform = 'translateY(-10px)';
-          el.style.filter = 'blur(4px)';
+        if (lockup !== null) {
+          lockup.style.transition = 'opacity 320ms ease-in, transform 320ms ease-in, filter 320ms ease-in';
+          void lockup.offsetWidth;
+          lockup.style.opacity = '0';
+          lockup.style.transform = 'translateY(-10px)';
+          lockup.style.filter = 'blur(4px)';
         }
         setTimeout(function () {
-          if (title === null) return;
-          if (reduced) { title.style.opacity = '1'; }
-          else { title.classList.add('is-in'); }
+          if (whale !== null) {
+            if (reduced) { whale.style.opacity = '1'; }
+            else { whale.classList.add('is-in'); }
+          }
+          if (title !== null) {
+            if (reduced) { title.style.opacity = '1'; }
+            else { title.classList.add('is-in'); }
+          }
         }, 320);
         setTimeout(function () {
           if (card !== null) {
@@ -415,7 +440,7 @@ function splashDataUrl(initialTheme?: 'dark' | 'light'): string {
             void card.offsetWidth;
             card.style.opacity = '0';
           }
-        }, 1400);
+        }, 1500);
         document.body.classList.add('exit');
       };
     })();
