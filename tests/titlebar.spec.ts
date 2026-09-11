@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   CAPTION_LEADING_CLEARANCE_MACOS_PX,
-  CAPTION_TRAILING_CLEARANCE_PX,
   TITLEBAR_GESTURE_PROBE_DELAYS_MS,
   TITLEBAR_STATE_PROBE,
   TITLEBAR_STRIP_FALLBACK_PX,
-  captionClearanceForPlatform,
   compositedSurfaceColor,
   initialOverlayPalette,
   overlayPaletteForSurface,
@@ -74,48 +72,64 @@ describe('overlay palette from a GUI surface', () => {
   })
 })
 
-describe('caption clearance', () => {
-  it('reserves the trailing right edge on Windows for the caption buttons', () => {
-    expect(captionClearanceForPlatform('win32')).toEqual({ leading: 0, trailing: CAPTION_TRAILING_CLEARANCE_PX })
-  })
-
-  it('reserves the leading left edge on macOS for the traffic lights', () => {
-    expect(captionClearanceForPlatform('darwin').leading).toBe(CAPTION_LEADING_CLEARANCE_MACOS_PX)
-  })
-
-  it('reserves nothing on unsupported platforms', () => {
-    expect(captionClearanceForPlatform('freebsd')).toEqual({ leading: 0, trailing: 0 })
-  })
-})
-
 describe('fusion CSS', () => {
-  it('turns the GUI top strip into the drag region', () => {
+  it('carves every interactive element out of the drag regions', () => {
     const css = titlebarFusionCss('win32')
-    // Sidebar brand row and conversation header are the chrome.
-    expect(css).toContain('[class*="logoRow"] { -webkit-app-region: drag; }')
+    expect(css).toContain('-webkit-app-region: no-drag;')
+    expect(css).toContain('[role="textbox"]')
+    expect(css).toContain('[contenteditable="true"]')
+  })
+
+  it('keeps the sidebar brand row draggable on every platform', () => {
+    for (const platform of ['win32', 'linux', 'darwin'] as const) {
+      expect(titlebarFusionCss(platform)).toContain('[class*="logoRow"] { -webkit-app-region: drag; }')
+    }
+  })
+
+  it('draws a shell title-bar strip on Windows and pushes the page below it', () => {
+    const css = titlebarFusionCss('win32')
+    // The strip is a fixed drag region under the sidebar (10), dsh's column
+    // handles (11) and the shell overlay (20).
+    const strip = /#root::before \{[^}]+\}/.exec(css)?.[0] ?? ''
+    expect(strip).not.toBe('')
+    expect(strip).toContain(`height: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px);`)
+    expect(strip).toContain('z-index: 5;')
+    // The hairline must render just BELOW the band (content-box): inside the
+    // band's height it lands under the OS caption buttons' opaque backdrop
+    // and shows a gap under the controls.
+    expect(strip).toContain('box-sizing: content-box;')
+    expect(css).toContain('border-bottom: 0.5px solid var(--dsw-alias-border-l3, transparent);')
+    expect(css).toContain('[class*="sidebarCol"]')
+    expect(css).toContain('z-index: 10;')
+    // The center column and the right panel start below the strip, so the
+    // caption buttons never overlay page content. The panel paints at
+    // z-index 10 — above the strip — so it must redraw the hairline itself
+    // along its span.
+    expect(css).toContain(`[class*="centerCol"] { padding-top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px); }`)
+    const panelRule = /#root \[data-sidebar-right-panel\] \{[^}]+\}/.exec(css)?.[0] ?? ''
+    expect(panelRule).toContain(`top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px);`)
+    expect(panelRule).toContain('border-top: 0.5px solid var(--dsw-alias-border-l3, transparent);')
+    // The page elements are no longer chrome: no header drag, no clearance
+    // carved out of the page.
+    expect(css).not.toContain('#root header')
+    expect(css).not.toContain('tabStrip')
+    expect(css).not.toContain('padding-right')
+  })
+
+  it('keeps the macOS fusion: traffic lights over the sidebar, header as drag chrome', () => {
+    const css = titlebarFusionCss('darwin')
+    expect(css).toContain(`[class*="logoRow"] { padding-left: ${CAPTION_LEADING_CLEARANCE_MACOS_PX}px; }`)
     expect(css).toContain('#root header { -webkit-app-region: drag; }')
-    // Every control inside them stays clickable.
-    expect(css).toContain('[class*="logoRow"] :is(button, a, input, select, textarea, [role="button"], [role="tab"]) { -webkit-app-region: no-drag; }')
-    expect(css).toContain('#root header :is(button, a, input, select, textarea, [role="button"], [role="tab"]) { -webkit-app-region: no-drag; }')
-  })
-
-  it('adds trailing clearance to the header on Windows and none on macOS', () => {
-    const win32 = titlebarFusionCss('win32')
-    expect(win32).toContain(`#root header { padding-right: calc(28px + ${CAPTION_TRAILING_CLEARANCE_PX}px); }`)
-    expect(win32).not.toContain('padding-left')
-    const darwin = titlebarFusionCss('darwin')
-    expect(darwin).toContain(`[class*="logoRow"] { padding-left: ${CAPTION_LEADING_CLEARANCE_MACOS_PX}px; }`)
-    expect(darwin).not.toContain('padding-right')
-  })
-
-  it('gives the hero phase a drag strip sized by the overlay area', () => {
-    const css = titlebarFusionCss('win32')
     expect(css).toContain('[class*="root"][data-phase="hero"] [class*="scrollBody"]::before')
-    expect(css).toContain(`height: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px);`)
+    // No shell strip exists on macOS (hiddenInset has no overlay).
+    expect(css).not.toContain('#root::before')
+    expect(css).not.toContain('centerCol')
+    expect(css).not.toContain('padding-right')
   })
 
   it('never disables pointer events on the drag regions (that kills dragging)', () => {
     expect(titlebarFusionCss('win32')).not.toContain('pointer-events')
+    expect(titlebarFusionCss('darwin')).not.toContain('pointer-events')
   })
 })
 

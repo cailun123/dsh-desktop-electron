@@ -63,8 +63,8 @@ describe('splash page', () => {
     expect(html).toContain('<svg class="splash-type" viewBox="25.46 3.4 155.99 18.3"')
     expect(html).toContain('height: 42px;')
     // 9 letter paths (k = stem + arm) + 7 badge letters = official path data
-    // inline.
-    expect((html.match(/<path d="/gu) ?? []).length).toBe(16)
+    // inline — each duplicated once for the shine clip copy (32 total).
+    expect((html.match(/<path d="/gu) ?? []).length).toBe(32)
     // The embedded Host Grotesk font is gone — no font machinery at all.
     expect(html).not.toContain('@font-face')
     expect(html).not.toContain('Host Grotesk')
@@ -100,6 +100,9 @@ describe('splash page', () => {
     // Site secondary-block parameters: 16px rise, 0.7s, 0.15s delay. Endpoint
     // opacity defaults to full: the bar never dims.
     expect(html).toContain('animation: ds-hero-enter 0.7s ease-out 0.15s backwards;')
+    // The hand-off title enters with the official secondary motion, staggered
+    // 0.15s behind the whale.
+    expect(html).toContain('animation: ds-hero-enter 0.7s ease-out 0.15s both;')
   })
 
   it('hands the logo off from the official entrance to breathing without a jump', () => {
@@ -181,9 +184,10 @@ describe('splash page', () => {
     const html = splashHtml()
     // The main process waits this long after __exit before removing the
     // splash view. The page fits the whole official hand-off inside that
-    // budget: wordmark reverse exit 320ms → title enter 0.7s → beat →
-    // whole-layer fade 700ms (320 + 700 + 380 + 700 = 2100).
-    expect(SPLASH_EXIT_MS).toBe(2100)
+    // budget: wordmark reverse exit 320ms → whale enter 0.9s + title enter
+    // 0.7s (staggered 0.15s) → beat → whole-layer fade 700ms
+    // (320 + 900 + 280 + 700 = 2200).
+    expect(SPLASH_EXIT_MS).toBe(2200)
     // The card fade is JS-driven: the enter animation's forwards fill
     // suppresses class-driven transitions (the layer used to vanish
     // instantly the moment .exit was applied).
@@ -200,7 +204,7 @@ describe('splash page', () => {
     expect(html).toContain('.splash-title.is-in {')
     expect(html).toContain('--enter-y: 18px;')
     expect(html).toContain('--enter-blur: 8px;')
-    expect(html).toContain('animation: ds-hero-enter 0.7s ease-out both;')
+    expect(html).toContain('animation: ds-hero-enter 0.7s ease-out 0.15s both;')
     // Official title typography, probed from the running GUI: 26px,
     // weight 500, the system sans stack, normal letter-spacing.
     expect(html).toContain('font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;')
@@ -221,9 +225,12 @@ describe('splash page', () => {
     expect(exitFn).toContain("querySelector('.card')")
     expect(exitFn).toContain('getComputedStyle')
     expect(exitFn).toContain("card.style.animation = 'none'")
-    expect(exitFn).not.toContain("querySelector('.splash-logo')")
+    // The whale IS driven at hand-off: it enters with the official primary
+    // animation (or shows statically under reduced motion).
+    expect(exitFn).toContain("querySelector('.splash-logo')")
+    expect(exitFn).toContain("whale.classList.add('is-in')")
+    expect(exitFn).toContain("whale.style.opacity = '1'")
     expect(exitFn).not.toContain("querySelector('.splash-glow')")
-    expect(exitFn).not.toContain('logo.style')
     expect(exitFn).not.toContain('glow.style')
     // 2) official reverse exit: the wordmark rises and blurs out (320ms),
     //    then the title enters with ds-hero-enter at 320ms.

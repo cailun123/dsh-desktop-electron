@@ -11,9 +11,10 @@
  * Topic shortcut — each jumping straight into that conversation.
  *
  * The window itself is Codex-style too (`titlebar.ts`): no native title bar —
- * the GUI's own top strip (sidebar brand row, conversation header) becomes
- * the draggable chrome via injected CSS, and the OS window controls are
- * drawn as an overlay whose palette follows the GUI's live theme.
+ * the shell injects a real title-bar strip across the top of the page, the
+ * left sidebar covers that strip's left end as full-height chrome, and the OS
+ * window controls are drawn inside the strip with a palette that follows the
+ * GUI's live theme.
  *
  * Startup is two-layered in one window (`splash.ts`): the window appears
  * immediately with the animated splash on a `WebContentsView` layered above
@@ -295,12 +296,13 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     backgroundColor: splashBackgroundColor(),
     icon: iconPath(),
-    // Codex-style title bar fusion (see titlebar.ts): no native title bar —
-    // the GUI's own top strip becomes the draggable chrome and the OS window
-    // controls are drawn as an overlay on top of the web surface. The initial
-    // overlay palette comes from dsh's theme preference so even the controls
-    // match before the GUI has rendered; the live palette follows the GUI
-    // once ready (installTitlebarFusion).
+    // Codex-style title bar (see titlebar.ts): no native title bar — the
+    // shell draws a real title-bar strip whose caption zone holds the OS
+    // window controls, the GUI's sidebar covers the strip's left end as
+    // full-height chrome, and the page starts below the strip so the controls
+    // never float over it. The initial overlay palette comes from dsh's theme
+    // preference so even the controls match before the GUI has rendered; the
+    // live palette follows the GUI once ready (installTitlebarFusion).
     ...windowChromeOptions(process.platform, THEME_PREFERENCE, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       contextIsolation: true,
@@ -423,9 +425,10 @@ function isTransparentColor(value: string): boolean {
 }
 
 /**
- * Turn the GUI's top strip into the window chrome (the CSS in `titlebar.ts`)
- * and keep the overlay window controls' palette in sync with the GUI's live
- * theme. The poll re-reads the surface state the GUI publishes (theme-color
+ * Install the title-bar layout CSS (the strip, the page offset below it, the
+ * sidebar covering its left end — the CSS in `titlebar.ts`) and keep the
+ * overlay window controls' palette in sync with the GUI's live theme. The
+ * poll re-reads the surface state the GUI publishes (theme-color
  * meta, plus any open modal's dim mask — see TITLEBAR_STATE_PROBE) — the
  * shell stays preload-free, so polling is the change signal. Failures are
  * best-effort: a missed poll just leaves the previous palette in place.

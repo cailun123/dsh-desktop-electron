@@ -25,12 +25,13 @@ An animated splash appears the moment the app boots — a breathing logo and a t
 - The GUI loads hidden behind the splash, and the animation ends exactly when the main interface is rendered — dsh's own loading spinner is never visible.
 - A standalone, offline browser preview lives at [preview/splash-preview.html](preview/splash-preview.html): open it directly (no app launch, no assets needed) to watch the breathing logo and the hand-off to the main window.
 
-### Fused title bar
+### Inverted title bar
 
-Codex-style: the window has **no native title bar** — the GUI's own top strip *is* the chrome, so the program reads as one continuous surface instead of a chrome-framed page.
+Codex-style with the layering flipped: the window has **no native title bar** — the shell draws a real title-bar strip across the top, and the GUI's own elements are what intrude into it, never the other way around.
 
-- The sidebar brand row and the conversation header (breadcrumb, tabs, actions) become the draggable title bar; every control inside them stays clickable. In the hero state (no session open) the empty strip above the centered composer is draggable too.
-- The OS window controls are drawn **on top of** the web surface: the Windows Window Controls Overlay (Linux follows the same scheme), inset traffic lights on macOS. The GUI's header keeps a clearance so nothing interactive lands under the controls.
+- On Windows (Linux follows the same scheme) the strip spans the whole top edge: a draggable band, hairline-ruled with the GUI's own border token, holding the Window Controls Overlay. The page proper — conversation header, composer, right panel — starts *below* the strip, so the close button never floats over page content and no surface needs a clearance carved out of it.
+- The **left sidebar covers the strip**: it stays a full-height column whose brand row remains draggable chrome, so the program reads as one continuous surface with the sidebar piercing the title bar.
+- On macOS the traffic lights sit inset over the sidebar's top-left (its brand row keeps a leading clearance) and the conversation header remains the drag chrome.
 - The controls' palette follows the GUI's live theme — dark surfaces get white glyphs, light ones black — synced from the theme color the GUI's own theme presenter publishes, with no preload and no IPC channel.
 
 ### Window and renderer security
@@ -91,7 +92,7 @@ Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn o
 ## Tests
 
 ```sh
-npm test                        # 116 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination, splash timeline, session feed, title bar fusion
+npm test                        # 127 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination, splash timeline, session feed, title bar fusion
 npm run test:electron:windows   # built Electron lifecycle through a Windows npm .cmd shim
 npm run typecheck
 npm run dist:dir                # unpacked app plus packaged production-closure verification
