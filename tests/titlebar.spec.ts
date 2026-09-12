@@ -88,24 +88,38 @@ describe('fusion CSS', () => {
 
   it('draws a shell title-bar strip on Windows and pushes the page below it', () => {
     const css = titlebarFusionCss('win32')
-    // The strip is a fixed drag region under the sidebar (10), dsh's column
-    // handles (11) and the shell overlay (20).
+    // The strip is a pure fixed drag band at z-index 0: the sidebar paints
+    // above it by tree order, not by an index of its own (see below), and it
+    // draws no line — the column surfaces that start at its bottom edge own
+    // that hairline.
     const strip = /#root::before \{[^}]+\}/.exec(css)?.[0] ?? ''
     expect(strip).not.toBe('')
     expect(strip).toContain(`height: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px);`)
-    expect(strip).toContain('z-index: 5;')
-    // The hairline must render just BELOW the band (content-box): inside the
-    // band's height it lands under the OS caption buttons' opaque backdrop
-    // and shows a gap under the controls.
-    expect(strip).toContain('box-sizing: content-box;')
-    expect(css).toContain('border-bottom: 0.5px solid var(--dsw-alias-border-l3, transparent);')
-    expect(css).toContain('[class*="sidebarCol"]')
-    expect(css).toContain('z-index: 10;')
-    // The center column and the right panel start below the strip, so the
-    // caption buttons never overlay page content. The panel paints at
-    // z-index 10 — above the strip — so it must redraw the hairline itself
-    // along its span.
+    expect(strip).toContain('z-index: 0;')
+    expect(strip).toContain('-webkit-app-region: drag;')
+    expect(strip).not.toContain('border-bottom')
+    // The sidebar column covers the strip's left end while staying free of a
+    // `z-index`: an indexed column becomes a stacking context and traps the
+    // GUI's full-viewport overlays (the settings dialog lives inside it)
+    // beneath dsh's right panel (z-index 10), which then covers the dialog.
+    const sidebarRule = /\[class\*="sidebarCol"\] \{[^}]+\}/.exec(css)?.[0] ?? ''
+    expect(sidebarRule).toContain('position: relative;')
+    expect(sidebarRule).toContain('height: 100%;')
+    expect(sidebarRule).not.toContain('z-index')
+    // The center column yields its top band to the strip and carries the
+    // boundary hairline: a zero-height first flex item that spans exactly the
+    // column, lifted above the column's opaque content root (which starts at
+    // the same edge) yet below the right panel (10).
     expect(css).toContain(`[class*="centerCol"] { padding-top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px); }`)
+    const lineRule = /\[class\*="centerCol"\]::before \{[^}]+\}/.exec(css)?.[0] ?? ''
+    expect(lineRule).toContain('box-sizing: content-box;')
+    expect(lineRule).toContain('flex: none;')
+    expect(lineRule).toContain('height: 0;')
+    expect(lineRule).toContain('border-bottom: 0.5px solid var(--dsw-alias-border-l3, transparent);')
+    const lineZ = Number(/z-index: (\d+);/.exec(lineRule)?.[1])
+    expect(lineZ).toBeGreaterThan(0)
+    expect(lineZ).toBeLessThan(10)
+    // The right panel continues the same boundary along its own span.
     const panelRule = /#root \[data-sidebar-right-panel\] \{[^}]+\}/.exec(css)?.[0] ?? ''
     expect(panelRule).toContain(`top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px);`)
     expect(panelRule).toContain('border-top: 0.5px solid var(--dsw-alias-border-l3, transparent);')

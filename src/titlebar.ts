@@ -137,12 +137,19 @@ export function windowChromeOptions(platform: NodeJS.Platform, preference: Theme
  * - the sidebar brand row (`logoRow`) stays draggable — the sidebar is the
  *   full-height surface that covers the strip's left end;
  * - Windows/Linux (where the Window Controls Overlay exists): a fixed strip
- *   across the whole top becomes the drag chrome at `z-index: 5` — under the
- *   sidebar column (`10`, raised here), dsh's column drag handles (`11`) and
- *   its shell overlay layer (`20`), and above all in-flow page content. The
- *   center column and the right panel (absolutely positioned against the
- *   frame) are pushed below the strip, so the OS caption buttons drawn inside
- *   the strip never float over page content;
+ *   across the whole top becomes the drag chrome at `z-index: 0` — under the
+ *   sidebar column (positioned, no `z-index`, so it paints later in tree
+ *   order), dsh's column drag handles (`11`) and its shell overlay layer
+ *   (`20`), and above all in-flow page content. The center column and the
+ *   right panel (absolutely positioned against the frame) are pushed below the
+ *   strip, so the OS caption buttons drawn inside the strip never float over
+ *   page content. Each surface that starts at the strip's bottom edge draws
+ *   the boundary hairline for its own span (the center column as its first
+ *   flex item, the right panel as its `border-top`), which keeps one
+ *   continuous line across the page while the sidebar stays line-free. The
+ *   sidebar deliberately carries no `z-index` of its own: the GUI mounts
+ *   full-viewport overlays (the settings dialog) inside that column, and an
+ *   indexed column would trap them under the right panel;
  * - macOS (hiddenInset, no overlay strip): the traffic lights sit over the
  *   sidebar's cleared brand row and the conversation header remains the drag
  *   chrome; the hero phase keeps a thin drag strip of its own.
@@ -159,43 +166,68 @@ export function titlebarFusionCss(platform: NodeJS.Platform): string {
   ]
   if (platform === 'win32' || platform === 'linux') {
     rules.push(
-      // The sidebar column is raised above the strip (dsh's own handles sit
-      // at 11 and the shell overlay at 20), so it reads as piercing the
-      // title bar while the strip's drag region stays out of its way.
+      // The sidebar column is raised above the strip — positioned, so it
+      // paints in the positioned step while the strip's `z-index: 0` also
+      // does, and tree order (`#root::before` first) puts the sidebar on top.
+      // It must NOT carry a `z-index`: the column hosts the GUI's own
+      // full-viewport overlays (the settings dialog is registered into the
+      // sidebar's `settingsArea` slot), and any non-auto `z-index` here turns
+      // the column into a stacking context that traps those overlays below
+      // its siblings — dsh's right panel (z-index 10, later in the frame)
+      // then covered the open settings dialog.
       `[class*="sidebarCol"] {
   position: relative;
-  z-index: 10;
   height: 100%;
 }`,
-      // The shell's title-bar strip: a transparent band across the whole top,
-      // hairline-ruled with the GUI's own border token so it reads as chrome.
-      // The rule stays content-box so the hairline renders just BELOW the
-      // band: a border inside the band's height would sit under the OS caption
-      // buttons' opaque backdrop and the line would show a gap under them.
-      // The right panel (z-index 10, above this strip) hides the line along
-      // its own span and redraws it as its border-top — see below.
+      // The shell's title-bar strip: a transparent drag band across the whole
+      // top. It stays a pure drag region — no line of its own — because it
+      // paints at the bottom of the positioned step (`z-index: 0`, under the
+      // positioned sidebar in tree order) and the column content roots below
+      // it are positioned with opaque backgrounds: a border here would be
+      // hidden over the center column anyway, and would double up with the
+      // line the column itself draws. The boundary hairline belongs to the
+      // surfaces that own the boundary (the center column and the right
+      // panel, below).
       `#root::before {
-  box-sizing: content-box;
   content: '';
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   height: ${stripHeight};
-  border-bottom: 0.5px solid var(--dsw-alias-border-l3, transparent);
-  z-index: 5;
+  z-index: 0;
   -webkit-app-region: drag;
 }`,
       // The page yields its top band to the strip: the center column's
-      // in-flow content (conversation header, composer) starts below it.
-      `[class*="centerCol"] { padding-top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px); }`,
+      // in-flow content (conversation header, composer) starts below it, and
+      // the column draws the boundary hairline across its own span — the
+      // sidebar keeps its full-height, line-free chrome (the strip's left end
+      // stays covered by the sidebar).
+      //
+      // The line is the column's first flex item, zero-height with a
+      // `content-box` bottom border, so it spans exactly the column and sits
+      // at the strip's bottom edge. It carries a `z-index` because the
+      // column's content root (`…_root`, `position: relative` with an opaque
+      // background) starts at that same edge and would otherwise paint over
+      // it; a flex item takes `z-index` without `position`, and the value
+      // stays under the right panel (`10`) so the panel still covers the line
+      // where it hangs over the column, continuing it with its own border-top
+      // (see below).
+      `[class*="centerCol"] { padding-top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px); }
+[class*="centerCol"]::before {
+  box-sizing: content-box;
+  content: '';
+  flex: none;
+  height: 0;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3, transparent);
+  z-index: 9;
+}`,
       // The right panel is positioned against the frame's right edge
       // (`top: 0`, absolute — and fixed under its fullscreen mode, which the
       // id-qualified selector outranks), so it is offset below the strip
       // directly. It paints at z-index 10, above the strip, so it would hide
-      // the strip's own hairline along its span — it carries the matching
-      // top border itself instead, which continues the strip's line at the
-      // panel's left edge.
+      // the strip's line along its span — it carries the matching top border
+      // itself instead, which continues the boundary at the panel's left edge.
       `#root [data-sidebar-right-panel] {
   top: ${stripHeight};
   border-top: 0.5px solid var(--dsw-alias-border-l3, transparent);
