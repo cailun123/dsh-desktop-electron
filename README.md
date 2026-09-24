@@ -29,10 +29,12 @@ An animated splash appears the moment the app boots — a breathing logo and a t
 
 Codex-style with the layering flipped: the window has **no native title bar** — the shell draws a real title-bar strip across the top, and the GUI's own elements are what intrude into it, never the other way around.
 
-- On Windows (Linux follows the same scheme) the strip spans the whole top edge: a draggable band, hairline-ruled with the GUI's own border token, holding the Window Controls Overlay. The page proper — conversation header, composer, right panel — starts *below* the strip, so the close button never floats over page content and no surface needs a clearance carved out of it.
+- On Windows (Linux follows the same scheme) the strip spans the whole top edge: a draggable band holding the Window Controls Overlay, with the app frame painting the window chrome around it. The page proper — conversation header, composer, right panel — starts *below* the band as a card: the content column's box begins at the band's bottom edge, so its surface and the GUI's own overflow clip turn its top-left corner, and the notch that leaves shows the chrome behind it. One boundary line runs the whole way — the band's bottom edge, the card's corner, the line that separates the card from the sidebar, and the right panel's top edge are one border drawn with the GUI's own border token, so all of its segments carry the same weight and the corner joins them tangentially. The card's corner is the roundest turn in the junction: the Codex desktop's card radius (~14 px) rather than the 8 px corner Windows rounds the window itself with.
+- The chrome is filled with the **sidebar's own fill token**, so the title bar and the sidebar read as one continuous surface instead of the page color butting into the column. Painting the token — not a copy of its value — keeps both in step through a theme flip.
 - The **left sidebar covers the strip**: it stays a full-height column whose brand row remains draggable chrome, so the program reads as one continuous surface with the sidebar piercing the title bar.
 - On macOS the traffic lights sit inset over the sidebar's top-left (its brand row keeps a leading clearance) and the conversation header remains the drag chrome.
-- The controls' palette follows the GUI's live theme — dark surfaces get white glyphs, light ones black — synced from the theme color the GUI's own theme presenter publishes, with no preload and no IPC channel.
+- The controls' palette follows the band they sit in — dark chrome gets white glyphs, light chrome black — read live from the sidebar column the band is painted with, falling back to the surface color the GUI's own theme presenter publishes where no chrome is painted. No preload and no IPC channel.
+- The OS draws those controls *above* every page layer, so a modal's dim mask cannot dim them: the shell composites the mask color over the surface and re-skins the strip. A page-side DOM observer wakes that read the moment a mask mounts (the periodic poll and the gesture probes stay as fallbacks), so opening Settings — or any other GUI surface that dims the page — dims the window controls in the same frame.
 
 ### Window and renderer security
 
@@ -92,8 +94,8 @@ Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn o
 ## Tests
 
 ```sh
-npm test                        # 127 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination, splash timeline, session feed, title bar fusion
-npm run test:electron:windows   # built Electron lifecycle through a Windows npm .cmd shim
+npm test                        # 135 keyless cases: command resolution/spawn, readiness parsing, HTTP polling, process-tree termination, splash timeline, session feed, title bar fusion
+npm run test:electron:windows   # built Electron lifecycle through a Windows npm .cmd shim, plus a title bar scrim sync latency check
 npm run typecheck
 npm run dist:dir                # unpacked app plus packaged production-closure verification
 ```
