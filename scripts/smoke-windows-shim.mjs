@@ -15,6 +15,18 @@ const require_ = createRequire(import.meta.url)
 const electronPath = require_('electron')
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)))
 const fixtureSource = join(packageDir, 'tests', 'fixtures', 'dsh-web-fixture.mjs')
+/**
+ * Upper bound (ms) the shell may take to re-skin the window controls after a
+ * scrim lands in the page. The event-driven sync lands in tens of ms; the
+ * poll-based path it replaced needed 250 ms (first gesture beat after a
+ * commit) up to 1.5 s, so this bound fails on a regression to sampling.
+ */
+const TITLEBAR_SYNC_LIMIT_MS = 250
+
+/** Read one `DSH_DESKTOP_TITLEBAR_*` measurement line out of the captured stdout. */
+function titlebarMeasurement(name, output) {
+  return new RegExp(`^${name} (\\S+)$`, 'm').exec(output)?.[1]
+}
 
 /** Await one promise with a bounded failure message. */
 async function withTimeout(promise, milliseconds, message) {
@@ -122,6 +134,16 @@ try {
     60_000,
     () => `dsh-desktop: Electron did not become ready\nstdout:\n${stdout}\nstderr:\n${stderr}`,
   )
+  // Both measurements are printed before the readiness line, so they are
+  // already in the captured stdout. A missing line (never measured) and a
+  // `timeout`/`error:` marker both parse to NaN and fail here.
+  const dimLatency = Number.parseInt(titlebarMeasurement('DSH_DESKTOP_TITLEBAR_LATENCY_MS', stdout) ?? '', 10)
+  const restoreLatency = Number.parseInt(titlebarMeasurement('DSH_DESKTOP_TITLEBAR_RESTORE_MS', stdout) ?? '', 10)
+  for (const [label, measured] of [['dim', dimLatency], ['restore', restoreLatency]]) {
+    if (!Number.isFinite(measured) || measured > TITLEBAR_SYNC_LIMIT_MS) {
+      throw new Error(`dsh-desktop: title bar did not follow the page scrim (${label}: ${String(measured)} ms, limit ${TITLEBAR_SYNC_LIMIT_MS} ms)\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+    }
+  }
   await writeFile(quitFile, 'quit', 'utf8')
   const result = await withTimeout(
     exited,
@@ -132,7 +154,7 @@ try {
     throw new Error(`dsh-desktop: Electron exited with code ${String(result.code)}, signal ${String(result.signal)}\nstdout:\n${stdout}\nstderr:\n${stderr}`)
   }
   await waitForProcessExit(serverPid)
-  process.stdout.write(`verified Windows npm command shim lifecycle (server pid ${serverPid})\n`)
+  process.stdout.write(`verified Windows npm command shim lifecycle (server pid ${serverPid}; title bar scrim ${dimLatency} ms, restore ${restoreLatency} ms)\n`)
 } finally {
   if (electron?.exitCode === null && electron.signalCode === null) {
     spawnSync('taskkill.exe', ['/pid', String(electron.pid), '/t', '/f'], {

@@ -9,9 +9,24 @@ function argument(name, fallback) {
 
 const host = argument('--host', '127.0.0.1')
 const port = Number.parseInt(argument('--port', '0'), 10)
+// The published surface color (`meta[name="theme-color"]`) is what the shell's
+// title-bar probe reads, and the lifecycle smoke measures the overlay sync
+// against it — a fixture without it would leave the probe with no surface.
+const page = [
+  '<!doctype html>',
+  '<html lang="en">',
+  '<head>',
+  '<meta charset="utf-8">',
+  '<meta name="theme-color" content="#ffffff">',
+  '<title>DSH fixture</title>',
+  '<style>html, body { margin: 0; height: 100%; background: #ffffff; }</style>',
+  '</head>',
+  '<body><div id="root"></div></body>',
+  '</html>',
+].join('\n')
 const server = createServer((_request, response) => {
   response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  response.end('<!doctype html><title>DSH fixture</title>')
+  response.end(page)
 })
 
 server.listen(port, host, () => {

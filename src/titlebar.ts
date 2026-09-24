@@ -7,8 +7,11 @@
  * bar, never the title bar into the GUI: the left sidebar is a full-height
  * column that covers the strip's left end (its brand row stays draggable
  * chrome), while the page proper — conversation header, composer, right
- * panel — begins *below* the strip. Nothing interactive can land under the
- * caption buttons, and no page surface needs a clearance carved out of it.
+ * panel — begins *below* the strip as a card tucked under one continuous
+ * chrome band, its top-left corner turned with one hairline that runs from
+ * the sidebar's separator around the arc and on across the band's bottom edge.
+ * Nothing interactive can land under the caption buttons, and no page surface
+ * needs a clearance carved out of it.
  *
  * This module holds the pure, testable part: the per-platform window-chrome
  * options, the overlay palette derived from the GUI's surface color, and the
@@ -22,6 +25,9 @@
  * not. The GUI's theme presenter keeps `<meta name="theme-color">` equal to
  * the live computed body background, which gives the overlay a theme-change
  * signal without any preload/IPC channel (the shell stays fully sandboxed).
+ * That signal is read on demand ({@link TITLEBAR_STATE_PROBE}) and, so a
+ * dialog's dim and the caption strip's dim land together, woken by a page-side
+ * DOM observer ({@link TITLEBAR_CHANGE_SIGNAL}) rather than sampled by a poll.
  */
 
 import { SPLASH_BG_DARK, SPLASH_BG_LIGHT } from './splash.ts'
@@ -70,11 +76,78 @@ export const CAPTION_LEADING_CLEARANCE_MACOS_PX = 78
 export const TITLEBAR_GESTURE_PROBE_DELAYS_MS: readonly number[] = [0, 60, 250, 600]
 
 /**
+ * Page-side timeout (ms) of the injected change signal (see
+ * {@link TITLEBAR_CHANGE_SIGNAL}). A quiet page resolves the signal with
+ * `false` after this long so the watch loop always comes back for a fresh
+ * authoritative read — a mask whose appearance the relevance filter cannot
+ * classify is still picked up, just one beat later.
+ */
+export const TITLEBAR_WATCH_TIMEOUT_MS = 8_000
+
+/**
+ * Main-process guard (ms) around the change signal. A frame that navigates
+ * away can leave the injected promise unsettled forever (the script's context
+ * is gone), so the loop races it against this guard instead of parking on it.
+ */
+export const TITLEBAR_WATCH_GUARD_MS = 10_000
+
+/**
  * Fallback height (px) of the injected title-bar strip, and of the macOS hero
  * drag strip, when `env(titlebar-area-height)` is unavailable (platforms
  * without the overlay, e.g. macOS hiddenInset).
  */
 export const TITLEBAR_STRIP_FALLBACK_PX = 40
+
+/**
+ * Class-stem selector for the sidebar column — the element that paints the
+ * window chrome. The injected caption band and the overlay controls both take
+ * their color from it, and the probe reads it back through this same selector,
+ * so the painted band and the controls drawn inside it can never disagree
+ * about what the chrome color is.
+ */
+export const TITLEBAR_SIDEBAR_SELECTOR = '[class*="sidebarCol"]'
+
+/**
+ * The GUI token that fills the sidebar column, and therefore the caption band:
+ * the chrome *is* the sidebar's color, so the title bar and the sidebar read as
+ * one continuous surface in every theme (the arrangement the Codex desktop
+ * uses, and the one the sidebar already implies by covering the band's left
+ * end). Reading the same token the column paints — rather than a copy of its
+ * value — keeps both in step through a theme flip with no extra plumbing, and
+ * the transparent fallback leaves the band unpainted on a frontend that
+ * publishes no such token (the probe then reports no chrome and the overlay
+ * falls back to the page surface behind the caption buttons).
+ */
+export const TITLEBAR_CHROME_FILL = 'var(--dsw-specific-sidebar-fill, transparent)'
+
+/**
+ * Radius (px) of the content card's top-left corner — the corner the page
+ * turns where the caption band meets the sidebar's right edge. Measured off
+ * the Codex desktop: its card turns with an arc of about 14 device px against
+ * a 344 px sidebar, i.e. a corner roughly 4% as wide as the column it opens
+ * from — visibly rounder than the 8 px corner Windows rounds the window itself
+ * with. The card is meant to read as a card tucked under the band, so its
+ * corner is the roundest turn in the junction: a radius of this size bends the
+ * boundary line gradually, where a tight one makes the same hairline look like
+ * a hook. It also stays clear of the sidebar's own controls, which end well
+ * short of the arc.
+ */
+export const TITLEBAR_CONTENT_RADIUS_PX = 14
+
+/**
+ * The boundary line: the content card's top edge, its corner and its left edge
+ * (which reads as the sidebar's separator), and the right panel's top edge are
+ * all drawn with these, so the chrome band is bounded by one line of one
+ * weight rather than three edges that happen to sit near each other.
+ *
+ * It is deliberately heavier than the GUI's own hairlines (half this width,
+ * one alias step lighter): this line is what separates the chrome from the
+ * page on every side of the junction, and the GUI's hairline weight dissolved
+ * against the band's own fill. The color is dsh's strongest border alias — the
+ * one its right panel already separates itself with.
+ */
+export const TITLEBAR_BOUNDARY_WIDTH_PX = 1
+export const TITLEBAR_BOUNDARY_COLOR = 'var(--dsw-alias-border-l4, transparent)'
 
 /**
  * The overlay palette matching a GUI surface color. Dark surfaces get white
@@ -135,14 +208,25 @@ export function windowChromeOptions(platform: NodeJS.Platform, preference: Theme
  *
  * - every interactive element is carved out of drag regions;
  * - the sidebar brand row (`logoRow`) stays draggable — the sidebar is the
- *   full-height surface that covers the strip's left end;
- * - Windows/Linux (where the Window Controls Overlay exists): a fixed strip
- *   across the whole top becomes the drag chrome at `z-index: 5` — under the
- *   sidebar column (`10`, raised here), dsh's column drag handles (`11`) and
- *   its shell overlay layer (`20`), and above all in-flow page content. The
- *   center column and the right panel (absolutely positioned against the
- *   frame) are pushed below the strip, so the OS caption buttons drawn inside
- *   the strip never float over page content;
+ *   full-height surface that covers the band's left end, and the caption band
+ *   is painted with the sidebar's own fill so that end is one continuous
+ *   surface rather than a band of the page color butting into a column;
+ * - Windows/Linux (where the Window Controls Overlay exists): the app frame
+ *   paints the window chrome, and a fixed strip across the whole top becomes
+ *   the drag chrome at `z-index: 0` — under the sidebar column (positioned, no
+ *   `z-index`, so it paints later in tree order), dsh's column drag handles
+ *   (`11`) and its shell overlay layer (`20`), and above all in-flow page
+ *   content. The page proper — the center column, and the right panel
+ *   positioned against the frame — is pushed below the strip and paints its
+ *   own surface, so the band the OS draws the caption buttons in stays chrome
+ *   and nothing in the page lands under those buttons. The content card draws
+ *   the junction's whole boundary with a single border — the band's bottom
+ *   edge, the arc around its top-left corner, and the line that separates it
+ *   from the sidebar — so the chrome reads as one surface and the page as a
+ *   card tucked under it (the Codex desktop's arrangement). The sidebar
+ *   deliberately carries no `z-index` of its own:
+ *   the GUI mounts full-viewport overlays (the settings dialog) inside that
+ *   column, and an indexed column would trap them under the right panel;
  * - macOS (hiddenInset, no overlay strip): the traffic lights sit over the
  *   sidebar's cleared brand row and the conversation header remains the drag
  *   chrome; the hero phase keeps a thin drag strip of its own.
@@ -159,46 +243,99 @@ export function titlebarFusionCss(platform: NodeJS.Platform): string {
   ]
   if (platform === 'win32' || platform === 'linux') {
     rules.push(
-      // The sidebar column is raised above the strip (dsh's own handles sit
-      // at 11 and the shell overlay at 20), so it reads as piercing the
-      // title bar while the strip's drag region stays out of its way.
-      `[class*="sidebarCol"] {
+      // The sidebar column keeps the window's full height — it is the chrome
+      // surface that reaches the top edge. It stays positioned so it paints
+      // after the shell's drag strip, which is positioned too but comes earlier
+      // in tree order: the strip spans the band's whole width, and a
+      // non-positioned column would let it sit on top of the brand row's own
+      // buttons. It must NOT carry a `z-index`: the column hosts the GUI's own
+      // full-viewport overlays (the settings dialog is registered into the
+      // sidebar's `settingsArea` slot), and any non-auto `z-index` here turns
+      // the column into a stacking context that traps those overlays below its
+      // siblings — dsh's right panel (z-index 10, later in the frame) then
+      // covered the open settings dialog. The rule is id-qualified because the
+      // `border-right` it drops is the GUI's own declaration: a plain
+      // class-stem selector ties with it, and a tie is decided by sheet order,
+      // which the injected sheet does not own.
+      `#root ${TITLEBAR_SIDEBAR_SELECTOR} {
   position: relative;
-  z-index: 10;
   height: 100%;
+  border-right: none;
 }`,
-      // The shell's title-bar strip: a transparent band across the whole top,
-      // hairline-ruled with the GUI's own border token so it reads as chrome.
-      // The rule stays content-box so the hairline renders just BELOW the
-      // band: a border inside the band's height would sit under the OS caption
-      // buttons' opaque backdrop and the line would show a gap under them.
-      // The right panel (z-index 10, above this strip) hides the line along
-      // its own span and redraws it as its border-top — see below.
+      // The window chrome: the app frame paints it, so the caption band above
+      // the columns and the notch behind the content card's rounded corner are
+      // one surface with the sidebar, and the columns paint their own colors
+      // over it. The frame is addressed through the column it holds rather
+      // than by its own class name: that class is a per-build CSS-module hash,
+      // and several other dsh packages ship `…_frame` classes of their own.
+      `#root *:has(> ${TITLEBAR_SIDEBAR_SELECTOR}) { background: ${TITLEBAR_CHROME_FILL}; }`,
+      // The shell's title-bar strip: a drag band across the whole top. It
+      // paints nothing — the chrome behind it is the frame's — because the
+      // strip sits at `z-index: 0` and the app frame is a positioned sibling
+      // that paints after it: a background here would be covered by the
+      // frame's own paint. It stays a pure drag region, with no line of its
+      // own, so the boundary belongs to the surfaces that own it.
       `#root::before {
-  box-sizing: content-box;
   content: '';
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   height: ${stripHeight};
-  border-bottom: 0.5px solid var(--dsw-alias-border-l3, transparent);
-  z-index: 5;
+  z-index: 0;
   -webkit-app-region: drag;
 }`,
-      // The page yields its top band to the strip: the center column's
-      // in-flow content (conversation header, composer) starts below it.
-      `[class*="centerCol"] { padding-top: env(titlebar-area-height, ${TITLEBAR_STRIP_FALLBACK_PX}px); }`,
+      // The page proper: the center column carries the page surface and the
+      // whole boundary of the junction. Its surface starts below the band: the
+      // column is pushed down by a margin rather than padded, so the column's
+      // own box begins at the band's bottom edge — its background then stops
+      // there (the frame's chrome shows above it) and `overflow: hidden`, which
+      // the GUI already sets on this column, clips the GUI's square-cornered
+      // content with the same radius. That is what turns the corner: a padding
+      // would leave the box at the window's top edge, where neither the
+      // background's stop nor the clip would line up with the band, and the
+      // radius would be reduced by the padding it skips. The column's in-flow
+      // content (conversation header, composer) still starts at the band's
+      // bottom edge, exactly as it did.
+      //
+      // The boundary is one border on this one box: the top edge across the
+      // band's bottom, the arc around the corner, and the left edge that reads
+      // as the sidebar's separator. Drawn as one path, the three segments carry
+      // the same weight, meet tangentially, and cannot drift apart by a pixel.
+      // The same junction assembled by hand — a separate separator hanging off
+      // the sidebar, a border on the card, plus a gradient ring laid over the
+      // arc to stop it fading — is what made the corner read as a hook: the
+      // ring sat a pixel below and a pixel inside the arc it was meant to
+      // thicken, so the line swelled to three pixels at the turn and then
+      // stepped back down to a line that was a shade lighter and a pixel to the
+      // left of the arc it continued. Using the browser's own arc keeps it the
+      // same stroke as the straight edges by construction.
+      //
+      // The left border also takes over the separator the sidebar used to
+      // carry: the line then runs on the card's white for its whole length
+      // instead of switching between the band's fill and the card's white at
+      // the corner, which is one color rather than two shades of one alias.
+      // Both borders are id-qualified because they override the GUI's own
+      // declarations, and a tie is decided by sheet order, which the injected
+      // sheet does not own.
+      `#root [class*="centerCol"] {
+  position: relative;
+  margin-top: ${stripHeight};
+  background: var(--dsw-alias-bg-base, transparent);
+  border-top: ${TITLEBAR_BOUNDARY_WIDTH_PX}px solid ${TITLEBAR_BOUNDARY_COLOR};
+  border-left: ${TITLEBAR_BOUNDARY_WIDTH_PX}px solid ${TITLEBAR_BOUNDARY_COLOR};
+  border-top-left-radius: ${TITLEBAR_CONTENT_RADIUS_PX}px;
+  corner-shape: round;
+}`,
       // The right panel is positioned against the frame's right edge
       // (`top: 0`, absolute — and fixed under its fullscreen mode, which the
       // id-qualified selector outranks), so it is offset below the strip
-      // directly. It paints at z-index 10, above the strip, so it would hide
-      // the strip's own hairline along its span — it carries the matching
-      // top border itself instead, which continues the strip's line at the
-      // panel's left edge.
+      // directly and carries the same boundary line as the card, so one
+      // hairline runs along the band's bottom edge across the whole page. Its
+      // own left border remains the panel's separator.
       `#root [data-sidebar-right-panel] {
   top: ${stripHeight};
-  border-top: 0.5px solid var(--dsw-alias-border-l3, transparent);
+  border-top: ${TITLEBAR_BOUNDARY_WIDTH_PX}px solid ${TITLEBAR_BOUNDARY_COLOR};
 }`,
     )
   } else {
@@ -225,25 +362,58 @@ export function titlebarFusionCss(platform: NodeJS.Platform): string {
 }
 
 /**
+ * Class-stem selector for full-viewport translucent layers (a modal's dim
+ * mask). Matched case-insensitively so stems like `_onboardingMask` register
+ * too, and shared by {@link TITLEBAR_STATE_PROBE} and
+ * {@link TITLEBAR_CHANGE_SIGNAL} so the state reader and the change signal
+ * can never disagree about what counts as a candidate.
+ */
+export const TITLEBAR_SCRIM_SELECTOR = "[class*='mask' i],[class*='overlay' i],[class*='scrim' i],[class*='backdrop' i]"
+
+/**
+ * Page-side reader for the window chrome's fill (see
+ * {@link TITLEBAR_CHROME_FILL}): the sidebar column's computed background —
+ * the very token the injected caption band paints with. It is an IIFE because
+ * both the title-bar probe below and the readiness probe in `main.ts` splice
+ * it into their own scripts: the band's paint and the overlay's palette must
+ * never be read from two different elements. A page without a sidebar column
+ * reports `undefined`, and the overlay then follows the page surface — which
+ * is what an unpainted band leaves behind the caption buttons.
+ */
+export const TITLEBAR_CHROME_READER = `(() => {
+  const sidebar = document.querySelector(${JSON.stringify(TITLEBAR_SIDEBAR_SELECTOR)});
+  return sidebar === null ? undefined : getComputedStyle(sidebar).backgroundColor;
+})()`
+
+/**
  * Injected probe: what the overlay controls should blend with right now.
  *
  * - `surface` — the GUI's theme presenter keeps `<meta name="theme-color">`
  *   equal to the computed body background, so re-reading it is a cheap
  *   theme-change signal (no preload, no IPC, no DOM mutation observer wired
  *   across the sandbox).
+ * - `chrome` — the window chrome's fill, read from the sidebar column
+ *   ({@link TITLEBAR_CHROME_READER}). The controls sit *inside* the caption
+ *   band, so they follow the band's own color, not the page surface behind it;
+ *   the band is unpainted only on a frontend without that token, and then this
+ *   is undefined and the surface is what the buttons really sit on.
  * - `scrim` — the background color of the topmost full-viewport translucent
  *   layer (a modal's dim mask), when one is open. The OS draws the caption
  *   buttons *above* every page layer, so a modal's mask cannot dim them;
  *   the main process composites this scrim over the surface and re-skins the
  *   controls to match, which keeps the buttons from glaring against a dimmed
- *   page. Candidates are matched by class stem (`mask`/`overlay`/`scrim`/
- *   `backdrop`, case-insensitive) and must actually cover the viewport and
+ *   page. Candidates are matched by class stem
+ *   ({@link TITLEBAR_SCRIM_SELECTOR}) and must actually cover the viewport and
  *   carry a translucent background — the app frame itself is opaque and
- *   never matches.
+ *   never matches. Only HTML elements are considered: an SVG `<mask>`/`<g>`
+ *   (icons built from SVG masks leave many of them in the DOM) can never be a
+ *   page scrim, and skipping them before `getComputedStyle` keeps the scan
+ *   cheap on every wake-up.
  */
 export const TITLEBAR_STATE_PROBE = `(() => {
   const meta = document.querySelector('meta[name="theme-color"]');
   const surface = meta === null ? undefined : meta.getAttribute('content');
+  const chrome = ${TITLEBAR_CHROME_READER};
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const alphaOf = (bg) => {
@@ -256,8 +426,9 @@ export const TITLEBAR_STATE_PROBE = `(() => {
   };
   let scrim;
   let scrimZ = -Infinity;
-  const candidates = document.querySelectorAll('[class*="mask" i],[class*="overlay" i],[class*="scrim" i],[class*="backdrop" i]');
+  const candidates = document.querySelectorAll(${JSON.stringify(TITLEBAR_SCRIM_SELECTOR)});
   for (const el of candidates) {
+    if (!(el instanceof HTMLElement)) continue;
     const cs = getComputedStyle(el);
     if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
@@ -270,7 +441,74 @@ export const TITLEBAR_STATE_PROBE = `(() => {
     scrimZ = z;
     scrim = cs.backgroundColor;
   }
-  return { surface, scrim };
+  return { surface, chrome, scrim };
+})()`
+
+/**
+ * Injected change signal: resolves as soon as something that could change the
+ * overlay state lands in the page, so the main process can re-read it within a
+ * frame instead of at the next poll tick. One promise = one wake-up; the watch
+ * loop in `main.ts` re-arms it after every resolution.
+ *
+ * It answers "did anything relevant happen?", never "what is the state" — the
+ * authoritative read stays {@link TITLEBAR_STATE_PROBE}, so this script does no
+ * color work and never forces style/layout. Relevant means:
+ *
+ * - a candidate element (or a subtree containing one) was added or removed —
+ *   a dialog's dim mask mounts/removes together with its overlay;
+ * - a candidate's own `class`/`style` changed, or `html`/`body`'s did (modals
+ *   and themes are also toggled by a class or inline style on the root);
+ * - `<meta name="theme-color">`'s `content` changed (the GUI re-publishes its
+ *   surface on a theme flip).
+ *
+ * Only HTML elements count, mirroring the probe's candidate rule. A quiet page
+ * resolves `false` after {@link TITLEBAR_WATCH_TIMEOUT_MS} so the loop always
+ * comes back for a fresh read.
+ */
+export const TITLEBAR_CHANGE_SIGNAL = `(() => {
+  const selector = ${JSON.stringify(TITLEBAR_SCRIM_SELECTOR)};
+  const hasCandidate = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    if (node.matches(selector)) return true;
+    for (const nested of node.querySelectorAll(selector)) {
+      if (nested instanceof HTMLElement) return true;
+    }
+    return false;
+  };
+  const isRelevant = (record) => {
+    if (record.type === 'childList') {
+      for (const node of record.addedNodes) if (hasCandidate(node)) return true;
+      for (const node of record.removedNodes) if (hasCandidate(node)) return true;
+      return false;
+    }
+    const target = record.target;
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.tagName === 'META' && target.getAttribute('name') === 'theme-color') return true;
+    if (target === document.documentElement || target === document.body) return true;
+    return target.matches(selector);
+  };
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (changed) => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      resolve(changed);
+    };
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        if (isRelevant(record)) { finish(true); return; }
+      }
+    });
+    observer.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'content'],
+    });
+    const timer = setTimeout(() => { finish(false); }, ${TITLEBAR_WATCH_TIMEOUT_MS});
+  });
 })()`
 
 /** An 8-bit sRGB channel triplet with alpha in 0..1. */
@@ -282,11 +520,28 @@ interface Rgba {
 }
 
 /**
+ * The color the overlay controls must blend with: the window chrome (the
+ * sidebar's fill, read back from the column the strip paints with the same
+ * token) whenever it resolves to an opaque color, else the GUI's published
+ * surface. The fallback covers the two cases where no chrome is painted: a
+ * frontend without the sidebar token, and a page whose column is absent or
+ * transparent — there the strip is transparent too, so the surface is what
+ * the caption buttons actually sit on.
+ * @param surface - the GUI's published body background.
+ * @param chrome - the sidebar column's painted background, when read.
+ * @returns the opaque base color the controls are skinned against.
+ */
+export function titlebarBaseColor(surface: string, chrome?: string): string {
+  if (chrome === undefined) return surface
+  return parseOpaqueRgb(chrome) === undefined ? surface : chrome
+}
+
+/**
  * Alpha-composite one color over another and return the opaque result. This
  * is what the caption buttons' backdrop should read while a modal dim mask is
  * open: the GUI's surface color seen through the mask — the same value the
  * user's eye assigns to the dimmed page around the controls.
- * @param surface - the opaque base (the GUI body background).
+ * @param surface - the opaque base ({@link titlebarBaseColor}).
  * @param scrim - the translucent layer on top of it (the mask background).
  * @returns an opaque `rgb()` string, or undefined when either value is
  *   transparent or unparsable (then the previous palette simply stays).

@@ -40,7 +40,7 @@ import { SessionFeed } from './sessions.ts'
 import type { SessionSummary } from './sessions.ts'
 import { resolveTrayLanguage, trayMenuTemplate, trayTooltip } from './tray-menu.ts'
 import { queryWindowsSystemUsesLightTheme, traySurfaceIsDark } from './system-theme.ts'
-import { TITLEBAR_GESTURE_PROBE_DELAYS_MS, TITLEBAR_STATE_PROBE, compositedSurfaceColor, overlayPaletteForSurface, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
+import { TITLEBAR_CHANGE_SIGNAL, TITLEBAR_CHROME_READER, TITLEBAR_GESTURE_PROBE_DELAYS_MS, TITLEBAR_STATE_PROBE, TITLEBAR_WATCH_GUARD_MS, compositedSurfaceColor, overlayPaletteForSurface, titlebarBaseColor, titlebarFusionCss, windowChromeOptions } from './titlebar.ts'
 import type { TrayLang } from './tray-menu.ts'
 const APP_ID = 'ai.deepseek.dsh-desktop'
 const WINDOW_TITLE = 'DeepSeek Harness'
@@ -62,6 +62,25 @@ const GUI_READY_POLL_MS = 150
 const SESSION_POLL_MS = 10_000
 /** Poll cadence for the title bar overlay's surface sync (theme + modal scrim). */
 const TITLEBAR_SYNC_POLL_MS = 1_500
+/**
+ * Backoff (ms) after a change-signal failure before the watch loop re-arms: a
+ * navigated or dying frame rejects the injected promise, and a tight retry
+ * loop would spin on IPC until the new document is up.
+ */
+const TITLEBAR_WATCH_RETRY_MS = 500
+/** Cap (ms) on the test-only title-bar sync measurement (see the lifecycle control). */
+const TITLEBAR_TEST_TIMEOUT_MS = 2_000
+/** Sampling step (ms) of the test-only title-bar sync measurement. */
+const TITLEBAR_TEST_SAMPLE_MS = 5
+/** Element id of the synthetic scrim the test-only title-bar measurement mounts. */
+const TITLEBAR_TEST_MASK_ID = 'dsh-desktop-titlebar-test-mask'
+/**
+ * The synthetic scrim's inline style: full-viewport, translucent, above the
+ * page — the shape every dialog mask has (and matching the probe's candidate
+ * class stem through its `…-mask` class), so the measurement exercises the real
+ * detection path.
+ */
+const TITLEBAR_TEST_MASK_STYLE = 'position:fixed;inset:0;background:rgba(0,0,0,0.32);z-index:9999'
 /** dsh's UI theme preference: 'dark' | 'light' | 'system'. */
 type ThemePreference = 'dark' | 'light' | 'system'
 /**
@@ -106,10 +125,13 @@ function dshSettingsText(): string | undefined {
  * must exist, the boot card (`[class*="_boot_"]`, the white card with the
  * spinner) must be gone, and either a failed state or real content is shown.
  * Also reports the body background (so the window can pre-paint the exact
- * surface behind the fading splash) and the effective theme, derived from
- * the body background luminance with a `prefers-color-scheme` fallback —
- * so the splash can match the GUI's actual light/dark rendering regardless
- * of dsh's internal theme mechanism. Returns `{ ready, bg?, theme? }`.
+ * surface behind the fading splash), the window chrome's fill — the sidebar's
+ * background, see TITLEBAR_CHROME_READER — so the caption strip is already
+ * skinned to the band it sits in on the first frame after the splash, and the
+ * effective theme, derived from the body background luminance with a
+ * `prefers-color-scheme` fallback — so the splash can match the GUI's actual
+ * light/dark rendering regardless of dsh's internal theme mechanism.
+ * Returns `{ ready, bg?, theme?, chrome? }`.
  */
 const GUI_READY_PROBE = `(() => {
   const root = document.getElementById('root');
@@ -118,6 +140,7 @@ const GUI_READY_PROBE = `(() => {
   const failed = root.querySelector('[class*="_failed_"]');
   if (failed || root.childElementCount > 0) {
     const bg = getComputedStyle(document.body).backgroundColor;
+    const chrome = ${TITLEBAR_CHROME_READER};
     const m = /rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/.exec(bg);
     let theme;
     if (m) {
@@ -126,7 +149,7 @@ const GUI_READY_PROBE = `(() => {
     } else {
       theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
-    return { ready: true, bg, theme };
+    return { ready: true, bg, theme, chrome };
   }
   return { ready: false };
 })()`
@@ -168,7 +191,14 @@ let sessionFeedError: string | undefined
 let trayLang: TrayLang = 'en'
 /** Poll timer keeping the title bar overlay palette in sync with the GUI theme. */
 let titlebarSyncTimer: NodeJS.Timeout | undefined
-/** Last effective surface color applied to the overlay (scrim-composited when a modal is open). */
+/**
+ * Generation of the title-bar sync loop. `stopTitlebarSync` and every
+ * `installTitlebarFusion` bump it, so a loop owned by a previous window — or
+ * one parked on a change signal whose frame navigated away — exits at its next
+ * await boundary instead of racing the current owner.
+ */
+let titlebarSyncGeneration = 0
+/** Last effective base color applied to the overlay (the chrome band, scrim-composited when a modal is open). */
 let titlebarSurface: string | undefined
 
 function iconPath(): string {
@@ -427,17 +457,25 @@ function isTransparentColor(value: string): boolean {
 /**
  * Install the title-bar layout CSS (the strip, the page offset below it, the
  * sidebar covering its left end — the CSS in `titlebar.ts`) and keep the
- * overlay window controls' palette in sync with the GUI's live theme. The
- * poll re-reads the surface state the GUI publishes (theme-color
- * meta, plus any open modal's dim mask — see TITLEBAR_STATE_PROBE) — the
- * shell stays preload-free, so polling is the change signal. Failures are
- * best-effort: a missed poll just leaves the previous palette in place.
+ * overlay window controls' palette in sync with the GUI's live state. The
+ * state the GUI publishes (theme-color meta, plus any open modal's dim mask —
+ * see TITLEBAR_STATE_PROBE) is read by the event-driven watch loop below, so a
+ * dialog's dim and the caption strip's dim land together; the poll and the
+ * gesture probes stay as fallbacks. The shell stays preload-free: the change
+ * signal is a page-side DOM observer (TITLEBAR_CHANGE_SIGNAL) awaited over
+ * `executeJavaScript`, not an IPC channel. Failures are best-effort: a missed
+ * signal just leaves the previous palette in place until the next beat.
  * @param window - the window hosting the GUI.
  * @param guiSurface - the GUI body background reported by the readiness
- *   probe, applied immediately when available (the poll covers later changes).
+ *   probe, applied immediately when available (the watch loop covers later
+ *   changes).
+ * @param guiChrome - the window chrome's fill reported by the readiness probe
+ *   (the sidebar's background). The caption buttons sit inside the strip, so
+ *   this — not the body background — is the color they are skinned to; the
+ *   watch loop covers later changes the same way.
  */
-function installTitlebarFusion(window: BrowserWindow, guiSurface?: string): void {
-  if (guiSurface !== undefined) applyTitlebarSurface(window, guiSurface)
+function installTitlebarFusion(window: BrowserWindow, guiSurface?: string, guiChrome?: string): void {
+  if (guiSurface !== undefined) applyTitlebarSurface(window, titlebarBaseColor(guiSurface, guiChrome))
   void window.webContents.insertCSS(titlebarFusionCss(process.platform)).catch((error: unknown) => {
     console.error(`[dsh-desktop] failed to inject title bar CSS: ${error instanceof Error ? error.message : String(error)}`)
   })
@@ -465,6 +503,55 @@ function installTitlebarFusion(window: BrowserWindow, guiSurface?: string): void
       timer.unref()
     }
   })
+  // Restoring from minimize can expose a state the page changed while the
+  // window was not being painted; no page gesture produced it, so re-read once.
+  window.on('restore', () => {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) void pollTitlebarState(window)
+  })
+  void watchTitlebarState(window, ++titlebarSyncGeneration)
+}
+
+/**
+ * Event-driven overlay sync: read the authoritative state, re-skin the overlay
+ * when it changed, then park on the page's change signal until the next
+ * relevant DOM mutation. This is what removes the lag the poll-based path had —
+ * a dialog's mask (settings, the attachment lightbox, any client-plugin modal)
+ * mounts in the same React commit as its overlay, and the strip follows within
+ * a frame instead of at the next gesture beat or poll tick. The signal is
+ * raced against {@link TITLEBAR_WATCH_GUARD_MS} because a navigated frame can
+ * leave the injected promise unsettled forever; a rejection backs off so a
+ * dying document cannot spin the loop on IPC. The poll stays as the fallback
+ * for state changes the signal's relevance filter does not classify.
+ * @param window - the window hosting the GUI.
+ * @param generation - the sync generation this loop was started for; a bump
+ *   (teardown or a fresh install) makes the loop exit.
+ */
+async function watchTitlebarState(window: BrowserWindow, generation: number): Promise<void> {
+  while (generation === titlebarSyncGeneration) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return
+    try {
+      await pollTitlebarState(window)
+      if (generation !== titlebarSyncGeneration) return
+      await Promise.race([
+        window.webContents.executeJavaScript(TITLEBAR_CHANGE_SIGNAL),
+        sleep(TITLEBAR_WATCH_GUARD_MS).then(() => false),
+      ])
+    } catch {
+      await sleep(TITLEBAR_WATCH_RETRY_MS)
+    }
+  }
+}
+
+/**
+ * Sleep for `ms` with the timer unreferenced, so a pending guard or backoff
+ * never keeps the main process alive on its own.
+ * @param ms - milliseconds to wait.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
 }
 
 /**
@@ -475,20 +562,29 @@ async function pollTitlebarState(window: BrowserWindow): Promise<void> {
   try {
     const state = await window.webContents.executeJavaScript(TITLEBAR_STATE_PROBE)
     if (state === null || typeof state !== 'object') return
-    const { surface, scrim } = state as { surface?: unknown; scrim?: unknown }
+    const { surface, chrome, scrim } = state as { surface?: unknown; chrome?: unknown; scrim?: unknown }
     if (typeof surface !== 'string') return
+    // The controls sit inside the strip, so they follow the chrome the strip
+    // is painted with (the sidebar's fill) rather than the page surface
+    // behind it; the surface stays the base only where no chrome is painted.
+    const base = titlebarBaseColor(surface, typeof chrome === 'string' ? chrome : undefined)
     // While a modal's dim mask is open the controls must read as part of the
     // dimmed page, not as a bright strip floating above it: composite the
-    // mask color over the surface before re-skinning the overlay.
-    const effective = typeof scrim === 'string' ? compositedSurfaceColor(surface, scrim) ?? surface : surface
+    // mask color over that base before re-skinning the overlay.
+    const effective = typeof scrim === 'string' ? compositedSurfaceColor(base, scrim) ?? base : base
     if (effective === titlebarSurface) return
     applyTitlebarSurface(window, effective)
   } catch {
-    // Mid-navigation or not yet ready; the next poll re-reads the meta.
+    // Mid-navigation or not yet ready; the next wake-up re-reads the meta.
   }
 }
 
+/**
+ * Stop the title-bar sync: clear the fallback poll and retire the watch loop
+ * (the generation bump makes it exit at its next await boundary).
+ */
 function stopTitlebarSync(): void {
+  titlebarSyncGeneration += 1
   if (titlebarSyncTimer !== undefined) {
     clearInterval(titlebarSyncTimer)
     titlebarSyncTimer = undefined
@@ -659,8 +755,9 @@ async function refreshSessions(): Promise<void> {
 /**
  * Expose the minimum file-based control used by the built Electron lifecycle
  * smoke. Server resolution, spawn, readiness, window creation, and teardown
- * remain the shipping path; the test hook only reports readiness and requests
- * the same `app.quit()` action as the tray menu.
+ * remain the shipping path; the test hook only measures the title-bar sync
+ * latency (see {@link measureTitlebarSyncLatency}), reports readiness and
+ * requests the same `app.quit()` action as the tray menu.
  */
 async function exposeLifecycleTestControl(): Promise<void> {
   if (process.env.DSH_DESKTOP_TEST !== '1') return
@@ -686,9 +783,65 @@ async function exposeLifecycleTestControl(): Promise<void> {
       app.quit()
     }, 100)
   }
+  // The title-bar sync latency is part of the shipped window contract: measure
+  // it before readiness, so the smoke can assert it from the captured stdout
+  // without any extra handshake.
+  await measureTitlebarSyncLatency()
   // Emit readiness only after the optional quit poller is registered, so a
   // harness reacting immediately cannot create the signal before observation.
   process.stdout.write(`DSH_DESKTOP_READY ${String(serverPid)}\n`)
+}
+
+/**
+ * Test-only: how long the overlay takes to follow a scrim that lands in the
+ * page, and to restore once it is gone. The smoke asserts both bounds, which
+ * is the regression check for the event-driven sync: the poll-based path
+ * needed 250 ms (the first gesture beat that runs after a commit) up to 1.5 s
+ * (the poll) for the same mutation. Results go to stdout as
+ * `DSH_DESKTOP_TITLEBAR_LATENCY_MS <ms>` and `DSH_DESKTOP_TITLEBAR_RESTORE_MS
+ * <ms>`, with `timeout`/`error:…` in place of the number when the overlay never
+ * followed — a missing or non-numeric line fails the smoke instead of hanging.
+ */
+async function measureTitlebarSyncLatency(): Promise<void> {
+  const window = mainWindow
+  if (window === undefined || window.isDestroyed() || window.webContents.isDestroyed()) return
+  const contents = window.webContents
+  const baseline = titlebarSurface
+  const mount = `(() => {
+  const el = document.createElement('div');
+  el.id = ${JSON.stringify(TITLEBAR_TEST_MASK_ID)};
+  el.className = 'dsh-desktop-latency-mask';
+  el.style.cssText = ${JSON.stringify(TITLEBAR_TEST_MASK_STYLE)};
+  document.body.appendChild(el);
+  return true;
+})()`
+  const unmount = `(() => {
+  document.getElementById(${JSON.stringify(TITLEBAR_TEST_MASK_ID)})?.remove();
+  return true;
+})()`
+  /** Wait until the applied surface color differs from `previous`. */
+  const waitForSurface = async (previous: string | undefined): Promise<string | undefined> => {
+    const deadline = Date.now() + TITLEBAR_TEST_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      if (titlebarSurface !== previous) return titlebarSurface
+      await sleep(TITLEBAR_TEST_SAMPLE_MS)
+    }
+    return undefined
+  }
+  try {
+    const dimStartedAt = Date.now()
+    await contents.executeJavaScript(mount)
+    const dimmed = await waitForSurface(baseline)
+    const dimLatency = Date.now() - dimStartedAt
+    process.stdout.write(`DSH_DESKTOP_TITLEBAR_LATENCY_MS ${dimmed === undefined ? 'timeout' : String(dimLatency)}\n`)
+    const restoreStartedAt = Date.now()
+    await contents.executeJavaScript(unmount)
+    const restored = await waitForSurface(dimmed)
+    const restoreLatency = Date.now() - restoreStartedAt
+    process.stdout.write(`DSH_DESKTOP_TITLEBAR_RESTORE_MS ${restored === undefined ? 'timeout' : String(restoreLatency)}\n`)
+  } catch (error) {
+    process.stdout.write(`DSH_DESKTOP_TITLEBAR_LATENCY_MS error:${error instanceof Error ? error.message : String(error)}\n`)
+  }
 }
 
 /**
@@ -950,8 +1103,8 @@ async function useReadyServer(url: URL): Promise<void> {
       }
       // Title bar fusion: the injection lands before the splash fade, so the
       // first frame the user sees is already fused; the initial palette comes
-      // straight from the probed surface.
-      installTitlebarFusion(window, probe.bg)
+      // straight from the probed chrome (the band's own paint) and surface.
+      installTitlebarFusion(window, probe.bg, probe.chrome)
       // The logo just keeps breathing until the minimum play time is met —
       // nothing on the page reports stages, so there is nothing to update.
       const elapsed = Date.now() - startedAt
@@ -991,11 +1144,12 @@ async function useReadyServer(url: URL): Promise<void> {
 
 /**
  * Poll the GUI document until the main interface is rendered (see
- * GUI_READY_PROBE). Returns the GUI's body background color when available.
- * Times out after {@link GUI_READY_PROBE_MS} and reports not-ready so the
- * hand-off can still proceed (fallback for non-standard frontends).
+ * GUI_READY_PROBE). Returns the GUI's body background and the window chrome's
+ * fill when available. Times out after {@link GUI_READY_PROBE_MS} and reports
+ * not-ready so the hand-off can still proceed (fallback for non-standard
+ * frontends).
  */
-async function waitForGuiReady(window: BrowserWindow): Promise<{ bg?: string }> {
+async function waitForGuiReady(window: BrowserWindow): Promise<{ bg?: string; chrome?: string }> {
   const deadline = Date.now() + GUI_READY_PROBE_MS
   let themePushed = false
   while (Date.now() < deadline) {
@@ -1003,9 +1157,10 @@ async function waitForGuiReady(window: BrowserWindow): Promise<{ bg?: string }> 
     try {
       const result = await window.webContents.executeJavaScript(GUI_READY_PROBE)
       if (result !== null && typeof result === 'object' && (result as { ready?: unknown }).ready === true) {
-        const probe: { bg?: string } = {}
-        const { bg, theme } = result as { bg?: unknown; theme?: unknown }
+        const probe: { bg?: string; chrome?: string } = {}
+        const { bg, theme, chrome } = result as { bg?: unknown; theme?: unknown; chrome?: unknown }
         if (typeof bg === 'string') probe.bg = bg
+        if (typeof chrome === 'string') probe.chrome = chrome
         // Keep the splash's palette in sync with the GUI's actual rendering
         // (covers dsh settings changed at runtime or a config read that missed).
         if (!themePushed && (theme === 'dark' || theme === 'light')) {
